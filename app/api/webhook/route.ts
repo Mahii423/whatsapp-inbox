@@ -1,15 +1,15 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import { NextRequest, NextResponse } from "next/server";
-import {
-  getSupabaseServiceRoleKey,
-  getSupabaseUrl,
-} from "../../../utils/supabase/env";
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN?.trim();
 
+function cleanEnv(value: string | undefined) {
+  return value?.trim().replace(/^["']|["']$/g, "");
+}
+
 function getServiceClient(): SupabaseClient | null {
-  const url = getSupabaseUrl();
-  const key = getSupabaseServiceRoleKey();
+  const url = cleanEnv(process.env.NEXT_PUBLIC_SUPABASE_URL);
+  const key = cleanEnv(process.env.SUPABASE_SERVICE_ROLE_KEY);
 
   if (!url || !key) {
     return null;
@@ -323,7 +323,6 @@ export async function POST(request: NextRequest) {
       message_type: messageType,
       content,
       whatsapp_message_id: whatsappMessageId,
-      created_at: now,
     });
 
     if (messageInsertError) {
