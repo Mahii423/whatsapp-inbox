@@ -1,28 +1,160 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { createClient } from "../utils/supabase/client";
 
-const chats = [
-  { name: "Muhammad Ali", message: "Assalam o Alaikum", time: "10:42 AM", unread: 2 },
-  { name: "Ahmed Khan", message: "Order ka kya bana?", time: "10:18 AM", unread: 0 },
-  { name: "Sarah", message: "Thank you!", time: "9:55 AM", unread: 0 },
-  { name: "Usman", message: "Can you help me?", time: "9:21 AM", unread: 5 },
-];
+type Contact = {
+  id: string;
+  name: string | null;
+  phone: string;
+  email: string | null;
+};
+
+type Conversation = {
+  id: string;
+  status: string;
+  last_message_at: string | null;
+  contacts: Contact | Contact[] | null;
+};
+
+type Message = {
+  id: string;
+  content: string | null;
+  sender_type: string;
+  created_at: string;
+};
 
 export default function Home() {
-  const [selectedChat, setSelectedChat] = useState(chats[0]);
-  const [message, setMessage] = useState("");
+  const supabase = createClient();
 
-  const sendMessage = () => {
-    if (!message.trim()) return;
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedChat, setSelectedChat] = useState<Conversation | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [message, setMessage] = useState("");
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    loadConversations();
+  }, []);
+
+  async function loadConversations() {
+    setLoading(true);
+
+    const { data: userData } = await supabase.auth.getUser();
+    const user = userData.user;
+
+    if (!user) {
+      setLoading(false);
+      return;
+    }
+
+    const { data: workspace, error: workspaceError } = await supabase
+      .from("workspaces")
+      .select("id, name")
+      .eq("owner_id", user.id)
+      .limit(1)
+      .single();
+
+    if (workspaceError || !workspace) {
+      console.error("Workspace error:", workspaceError);
+      setLoading(false);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("conversations")
+      .select(`
+        id,
+        status,
+        last_message_at,
+        contacts (
+          id,
+          name,
+          phone,
+          email
+        )
+      `)
+      .eq("workspace_id", workspace.id)
+      .order("last_message_at", { ascending: false });
+
+    if (error) {
+      console.error("Conversation error:", error);
+      setLoading(false);
+      return;
+    }
+
+    setConversations(data || []);
+
+    if (data && data.length > 0) {
+      setSelectedChat(data[0]);
+      loadMessages(data[0].id);
+    }
+
+    setLoading(false);
+  }
+
+  async function loadMessages(conversationId: string) {
+    const { data, error } = await supabase
+      .from("messages")
+      .select("id, content, sender_type, created_at")
+      .eq("conversation_id", conversationId)
+      .order("created_at", { ascending: true });
+
+    if (error) {
+      console.error("Message error:", error);
+      return;
+    }
+
+    setMessages(data || []);
+  }
+
+  function getContact(chat: Conversation) {
+    if (Array.isArray(chat.contacts)) {
+      return chat.contacts[0] || null;
+    }
+
+    return chat.contacts;
+  }
+
+  function selectConversation(chat: Conversation) {
+    setSelectedChat(chat);
+    loadMessages(chat.id);
+  }
+
+  async function sendMessage() {
+    if (!message.trim() || !selectedChat) return;
+
+    const user = (await supabase.auth.getUser()).data.user;
+
+    const { error } = await supabase.from("messages").insert({
+      conversation_id: selectedChat.id,
+      sender_type: "agent",
+      sender_id: user?.id,
+      message_type: "text",
+      content: message.trim(),
+    });
+
+    if (error) {
+      console.error("Send message error:", error);
+      return;
+    }
+
     setMessage("");
-  };
+    loadMessages(selectedChat.id);
+  }
+
+  const customer = selectedChat
+    ? getContact(selectedChat)
+    : null;
 
   return (
     <main className="inbox">
+
       <aside className="sidebar">
+
         <div className="brand">
           <div className="logo">W</div>
+
           <div>
             <h1>WhatsApp Inbox</h1>
             <span>Customer Support</span>
@@ -40,104 +172,264 @@ export default function Home() {
         </div>
 
         <div className="chat-list">
-          {chats.map((chat) => (
-            <button
-              className={`chat-item ${
-                selectedChat.name === chat.name ? "selected" : ""
-              }`}
-              key={chat.name}
-              onClick={() => setSelectedChat(chat)}
-            >
-              <div className="avatar">{chat.name.charAt(0)}</div>
 
-              <div className="chat-info">
-                <div className="chat-top">
-                  <strong>{chat.name}</strong>
-                  <small>{chat.time}</small>
+          {loading && (
+            <p style={{ padding: "20px" }}>
+              Loading conversations...
+            </p>
+          )}
+
+          {!loading && conversations.length === 0 && (
+            <p style={{ padding: "20px" }}>
+              No conversations yet.
+            </p>
+          )}
+
+          {conversations.map((chat) => {
+
+            const contact = getContact(chat);
+
+            const name =
+              contact?.name ||
+              contact?.phone ||
+              "Unknown Customer";
+
+            return (
+              <button
+                key={chat.id}
+                className={`chat-item ${
+                  selectedChat?.id === chat.id
+                    ? "selected"
+                    : ""
+                }`}
+                onClick={() => selectConversation(chat)}
+              >
+
+                <div className="avatar">
+                  {name.charAt(0).toUpperCase()}
                 </div>
 
-                <div className="chat-bottom">
-                  <span>{chat.message}</span>
-                  {chat.unread > 0 && (
-                    <b className="unread">{chat.unread}</b>
-                  )}
+                <div className="chat-info">
+
+                  <div className="chat-top">
+                    <strong>{name}</strong>
+                  </div>
+
+                  <div className="chat-bottom">
+                    <span>
+                      {chat.status}
+                    </span>
+                  </div>
+
                 </div>
-              </div>
-            </button>
-          ))}
+
+              </button>
+            );
+          })}
+
         </div>
+
       </aside>
+
 
       <section className="conversation">
-        <header className="conversation-header">
-          <div className="avatar large">
-            {selectedChat.name.charAt(0)}
-          </div>
 
-          <div>
-            <h2>{selectedChat.name}</h2>
-            <span className="online">● Online</span>
-          </div>
+        {selectedChat ? (
 
-          <div className="header-actions">
-            <button>☎</button>
-            <button>⋮</button>
-          </div>
-        </header>
+          <>
 
-        <div className="messages">
-          <div className="date">Today</div>
+            <header className="conversation-header">
 
-          <div className="message received">
-            <p>{selectedChat.message}</p>
-            <small>10:42 AM</small>
-          </div>
+              <div className="avatar large">
+                {(customer?.name ||
+                  customer?.phone ||
+                  "?")
+                  .charAt(0)
+                  .toUpperCase()}
+              </div>
 
-          <div className="message sent">
-            <p>Wa Alaikum Assalam! How can I help you?</p>
-            <small>10:43 AM ✓✓</small>
-          </div>
-        </div>
+              <div>
 
-        <div className="message-box">
-          <button className="icon-btn">＋</button>
+                <h2>
+                  {customer?.name ||
+                    customer?.phone ||
+                    "Unknown Customer"}
+                </h2>
 
-          <input
-            value={message}
-            onChange={(e) => setMessage(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") sendMessage();
+                <span className="online">
+                  ● Connected
+                </span>
+
+              </div>
+
+              <div className="header-actions">
+                <button>☎</button>
+                <button>⋮</button>
+              </div>
+
+            </header>
+
+
+            <div className="messages">
+
+              <div className="date">
+                Conversation
+              </div>
+
+              {messages.length === 0 && (
+                <p style={{ textAlign: "center" }}>
+                  No messages yet.
+                </p>
+              )}
+
+              {messages.map((msg) => (
+
+                <div
+                  key={msg.id}
+                  className={`message ${
+                    msg.sender_type === "agent"
+                      ? "sent"
+                      : "received"
+                  }`}
+                >
+
+                  <p>{msg.content}</p>
+
+                  <small>
+                    {new Date(
+                      msg.created_at
+                    ).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </small>
+
+                </div>
+
+              ))}
+
+            </div>
+
+
+            <div className="message-box">
+
+              <button className="icon-btn">
+                ＋
+              </button>
+
+              <input
+                value={message}
+                onChange={(e) =>
+                  setMessage(e.target.value)
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    sendMessage();
+                  }
+                }}
+                placeholder="Type a message..."
+              />
+
+              <button
+                className="send-btn"
+                onClick={sendMessage}
+              >
+                ➤
+              </button>
+
+            </div>
+
+          </>
+
+        ) : (
+
+          <div
+            style={{
+              height: "100%",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
             }}
-            placeholder="Type a message..."
-          />
+          >
+            <h2>No conversation selected</h2>
+          </div>
 
-          <button className="send-btn" onClick={sendMessage}>
-            ➤
-          </button>
-        </div>
+        )}
+
       </section>
 
+
       <aside className="details">
-        <div className="details-avatar">
-          {selectedChat.name.charAt(0)}
-        </div>
 
-        <h2>{selectedChat.name}</h2>
-        <span className="online">● Online</span>
+        {selectedChat && (
 
-        <div className="detail-card">
-          <h3>Customer Details</h3>
-          <p><b>Phone</b><br />+92 300 1234567</p>
-          <p><b>Email</b><br />customer@example.com</p>
-        </div>
+          <>
 
-        <div className="detail-card">
-          <h3>Conversation</h3>
-          <p><b>Status:</b> Open</p>
-          <p><b>Assigned to:</b> Admin</p>
-          <p><b>Source:</b> WhatsApp</p>
-        </div>
+            <div className="details-avatar">
+              {(customer?.name ||
+                customer?.phone ||
+                "?")
+                .charAt(0)
+                .toUpperCase()}
+            </div>
+
+            <h2>
+              {customer?.name ||
+                customer?.phone ||
+                "Unknown Customer"}
+            </h2>
+
+            <span className="online">
+              ● Connected
+            </span>
+
+
+            <div className="detail-card">
+
+              <h3>Customer Details</h3>
+
+              <p>
+                <b>Phone</b>
+                <br />
+                {customer?.phone ||
+                  "Not available"}
+              </p>
+
+              <p>
+                <b>Email</b>
+                <br />
+                {customer?.email ||
+                  "Not available"}
+              </p>
+
+            </div>
+
+
+            <div className="detail-card">
+
+              <h3>Conversation</h3>
+
+              <p>
+                <b>Status:</b>{" "}
+                {selectedChat.status}
+              </p>
+
+              <p>
+                <b>Assigned to:</b> Admin
+              </p>
+
+              <p>
+                <b>Source:</b> WhatsApp
+              </p>
+
+            </div>
+
+          </>
+
+        )}
+
       </aside>
+
     </main>
   );
 }
