@@ -49,10 +49,8 @@ async function handleStatuses(supabase: SupabaseClient, statuses: any[]) {
     const whatsappMessageId = item?.id;
     const incoming = normalizeWhatsAppStatus(item?.status);
     if (!whatsappMessageId ||!incoming) continue;
-
     const { data: existing } = await supabase.from("messages").select("id, status").eq("whatsapp_message_id", whatsappMessageId).maybeSingle();
     if (!existing) continue;
-
     const nextStatus = nextDeliveryStatus(existing.status, incoming);
     await supabase.from("messages").update({ status: nextStatus, status_error: nextStatus === "failed"? failedStatusError(item) : null }).eq("id", existing.id);
     results.push({ updated: true, whatsappMessageId, status: nextStatus });
@@ -73,16 +71,20 @@ async function handleIncomingMessage(supabase: SupabaseClient, value: any, messa
   }
 
   const { data: whatsappAccount } = await supabase
-  .from("whatsapp_accounts")
-  .select("id, workspace_id, phone_number_id, access_token")
-  .eq("phone_number_id", phoneNumberId)
-  .maybeSingle();
+   .from("whatsapp_accounts")
+   .select("id, workspace_id, phone_number_id, access_token")
+   .eq("phone_number_id", phoneNumberId)
+   .maybeSingle();
 
   if (!whatsappAccount) {
     return { error: "WhatsApp account not configured", phone_number_id: phoneNumberId };
   }
 
   const workspaceId = whatsappAccount.workspace_id;
+
+  // FIX: workspace ka owner_id lao taake user_id daal sakein
+  const { data: workspace } = await supabase.from("workspaces").select("owner_id").eq("id", workspaceId).single();
+
   const content = messageContent(message);
   const avatarUrl = await fetchWhatsAppProfilePic(customerPhone, whatsappAccount.access_token);
 
@@ -98,8 +100,8 @@ async function handleIncomingMessage(supabase: SupabaseClient, value: any, messa
       await supabase.from("contacts").update(updates).eq("id", contactId);
     }
   } else {
-    // ✅ CRM FIX: Naya contact ab CRM me NEW lead banega
     const { data: newContact } = await supabase.from("contacts").insert({
+      user_id: workspace?.owner_id,
       workspace_id: workspaceId,
       name: customerName,
       phone: customerPhone,
