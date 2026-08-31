@@ -19,7 +19,6 @@ function getServiceClient(): SupabaseClient | null {
   return createClient(url, key);
 }
 
-// SaaS FIX: Token har account ka alag hoga
 async function fetchWhatsAppProfilePic(customerPhone: string, accessToken: string): Promise<string | null> {
   if (!accessToken) return null;
   try {
@@ -73,12 +72,11 @@ async function handleIncomingMessage(supabase: SupabaseClient, value: any, messa
     return { error: "Missing data" };
   }
 
-  // SaaS FIX: access_token bhi lo taake profile pic fetch ho sake
   const { data: whatsappAccount } = await supabase
-   .from("whatsapp_accounts")
-   .select("id, workspace_id, phone_number_id, access_token")
-   .eq("phone_number_id", phoneNumberId)
-   .maybeSingle();
+  .from("whatsapp_accounts")
+  .select("id, workspace_id, phone_number_id, access_token")
+  .eq("phone_number_id", phoneNumberId)
+  .maybeSingle();
 
   if (!whatsappAccount) {
     return { error: "WhatsApp account not configured", phone_number_id: phoneNumberId };
@@ -100,7 +98,15 @@ async function handleIncomingMessage(supabase: SupabaseClient, value: any, messa
       await supabase.from("contacts").update(updates).eq("id", contactId);
     }
   } else {
-    const { data: newContact } = await supabase.from("contacts").insert({ workspace_id: workspaceId, name: customerName, phone: customerPhone, avatar_url: avatarUrl }).select("id").single();
+    // ✅ CRM FIX: Naya contact ab CRM me NEW lead banega
+    const { data: newContact } = await supabase.from("contacts").insert({
+      workspace_id: workspaceId,
+      name: customerName,
+      phone: customerPhone,
+      avatar_url: avatarUrl,
+      status: "new",
+      source: "whatsapp"
+    }).select("id").single();
     if (!newContact) return { error: "Contact creation failed" };
     contactId = newContact.id;
   }
