@@ -1,6 +1,6 @@
 "use client";
 import { useState } from "react";
-import { createClient } from "../utils/supabase/client";
+import { createClient } from "../../utils/supabase/client";
 import { useRouter } from "next/navigation";
 
 export default function AuthPage() {
@@ -21,7 +21,7 @@ export default function AuthPage() {
       } else {
         const { error } = await supabase.auth.signUp({ email, password });
         if (error) throw error;
-        alert("Account ban gaya! Ab login karo");
+        alert("Account ban gaya! Ab login karo - MahiWAinbox");
         setIsLogin(true);
       }
       router.push("/");
@@ -41,7 +41,7 @@ export default function AuthPage() {
           <input
             type="email"
             placeholder="Email"
-            className="w-full p-3 border rounded-lg"
+            className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
@@ -49,7 +49,7 @@ export default function AuthPage() {
           <input
             type="password"
             placeholder="Password"
-            className="w-full p-3 border rounded-lg"
+            className="w-full p-3 border rounded-lg focus:outline-none focus:ring-2 focus:ring-green-500"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             required
@@ -57,7 +57,7 @@ export default function AuthPage() {
           <button
             type="submit"
             disabled={loading}
-            className="w-full bg-green-600 text-white p-3 rounded-lg font-bold hover:bg-green-700"
+            className="w-full bg-green-600 text-white p-3 rounded-lg font-bold hover:bg-green-700 disabled:opacity-50"
           >
             {loading ? "Wait..." : isLogin ? "Login" : "Sign Up"}
           </button>
