@@ -1,7 +1,12 @@
 "use client";
+import React from "react";
 import Sidebar from "./Sidebar";
 
-export default function MahiWALayout({ children }: { children: React.ReactNode }) {
+interface LayoutProps {
+  children: React.ReactNode;
+}
+
+export default function MahiWALayout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen bg-[#f8f9fb]">
       <Sidebar />
