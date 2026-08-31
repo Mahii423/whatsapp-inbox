@@ -1,16 +1,10 @@
 "use client";
-import React from "react";
 import Sidebar from "./Sidebar";
-
-interface LayoutProps {
-  children: React.ReactNode;
-}
-
-export default function MahiWALayout({ children }: LayoutProps) {
+export default function MahiWALayout({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-[#f8f9fb]">
+    <div>
       <Sidebar />
-      <main className="md:ml- min-h-screen p-4">
+      <main className="md:ml-">
         {children}
       </main>
     </div>
