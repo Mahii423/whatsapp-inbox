@@ -38,6 +38,13 @@ export default function SignupPage() {
       return;
     }
 
+    if (data.user) {
+      await supabase.from("workspaces").insert({
+        owner_id: data.user.id,
+        name: businessName.trim() || "My Workspace",
+      });
+    }
+
     if (data.session) {
       router.push("/");
       router.refresh();
