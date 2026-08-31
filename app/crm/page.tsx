@@ -19,13 +19,13 @@ export default function CRMPage() {
   const addContact = async (e: any) => {
     e.preventDefault();
     const { data: { user } } = await supabase.auth.getUser();
-    await supabase.from("contacts").insert({ user_id: user?.id, name, phone, status: 'lead' });
+    await supabase.from("contacts").insert({ user_id: user?.id, name, phone, status: 'new' });
     setName(""); setPhone(""); fetchContacts();
   };
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
-      <h1 className="text-3xl font-bold mb-6">MahiWA CRM - Bitrix Style</h1>
+      <h1 className="text-3xl font-bold mb-6">MahiWA CRM</h1>
 
       <form onSubmit={addContact} className="flex gap-2 mb-6 bg-white p-4 rounded-xl shadow">
         <input value={name} onChange={e=>setName(e.target.value)} placeholder="Name" className="p-2 border rounded flex-1" required/>
