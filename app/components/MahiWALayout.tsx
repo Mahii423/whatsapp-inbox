@@ -10,7 +10,7 @@ export default function MahiWALayout({ children }: LayoutProps) {
   return (
     <div className="min-h-screen bg-[#f8f9fb]">
       <Sidebar />
-      <main className="md:ml- min-h-screen p-6">
+      <main className="md:ml- min-h-screen p-4">
         {children}
       </main>
     </div>
