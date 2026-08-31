@@ -1,116 +1,118 @@
 "use client";
 import { useEffect, useState } from "react";
 import { supabase } from "@/lib/supabase";
+import Link from "next/link";
 
-type Contact = { id: string; phone: string; name: string; last_message?: string }
-type Message = { id: string; contact_id: string; message: string; from_me: boolean; created_at: string }
+type Conv = {
+  id: string;
+  contact_id: string;
+  contacts: { id:string; name:string; phone:string; avatar_url?: string } | null;
+  last_message_at: string;
+}
+type Msg = { id:string; conversation_id:string; content:string; sender_type:string; created_at:string }
 
 export default function InboxPage() {
-  const [contacts, setContacts] = useState<Contact[]>([]);
-  const [selected, setSelected] = useState<Contact | null>(null);
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [convs, setConvs] = useState<Conv[]>([]);
+  const [selected, setSelected] = useState<Conv | null>(null);
+  const [messages, setMessages] = useState<Msg[]>([]);
   const [newMsg, setNewMsg] = useState("");
-  const [loading, setLoading] = useState(true);
+  const [hasWhatsApp, setHasWhatsApp] = useState<boolean | null>(null);
 
   useEffect(() => {
-    async function load() {
-      setLoading(true);
-      const { data } = await supabase.from("contacts").select("*").order("created_at", { ascending: false }).limit(50);
-      if (data && data.length > 0) {
-        setContacts(data as any);
-        setSelected(data[0] as any);
-      } else {
-        const res2 = await supabase.from("whatsapp_contacts").select("*").limit(50);
-        if (res2.data) {
-          setContacts(res2.data as any);
-          if (res2.data.length > 0) setSelected(res2.data[0] as any);
-        }
+    async function checkAccountAndLoad() {
+      // 1. Check WhatsApp connected?
+      const { data: acc } = await supabase.from("whatsapp_accounts").select("id").limit(1).maybeSingle();
+      if (!acc) { setHasWhatsApp(false); return; }
+      setHasWhatsApp(true);
+
+      // 2. Load conversations with contact
+      const { data } = await supabase
+       .from("conversations")
+       .select("id, contact_id, last_message_at, contacts(id,name,phone,avatar_url)")
+       .order("last_message_at", { ascending: false })
+       .limit(50);
+      if (data) {
+        setConvs(data as any);
+        if (data.length > 0) setSelected(data[0] as any);
       }
-      setLoading(false);
     }
-    load();
+    checkAccountAndLoad();
   }, []);
 
   useEffect(() => {
     if (!selected?.id) return;
     async function loadMsgs() {
-      if (!selected) return;
-      const { data } = await supabase.from("messages").select("*").eq("contact_id", selected.id).order("created_at", { ascending: true });
+      const { data } = await supabase.from("messages")
+       .select("*")
+       .eq("conversation_id", selected!.id)
+       .order("created_at", { ascending: true });
       if (data) setMessages(data as any);
     }
     loadMsgs();
-
-    const selectedId = selected.id;
-    const channel = supabase.channel(`msgs-${selectedId}`).on('postgres_changes',
-      { event: 'INSERT', schema: 'public', table: 'messages', filter: `contact_id=eq.${selectedId}` },
-      (payload) => {
-        setMessages(prev => [...prev, payload.new as Message]);
-      }
-    ).subscribe();
-    return () => { supabase.removeChannel(channel) }
+    const ch = supabase.channel(`conv-${selected.id}`)
+     .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'messages', filter: `conversation_id=eq.${selected.id}` }, (p) => {
+        setMessages(prev => [...prev, p.new as Msg]);
+      }).subscribe();
+    return () => { supabase.removeChannel(ch) }
   }, [selected]);
 
   async function sendMessage() {
     if (!newMsg.trim() ||!selected) return;
-    const msg = newMsg;
-    setNewMsg("");
-    await supabase.from("messages").insert({ contact_id: selected.id, message: msg, from_me: true });
-    setMessages(prev => [...prev, { id: Date.now().toString(), contact_id: selected.id, message: msg, from_me: true, created_at: new Date().toISOString() } as any]);
-    try {
-      await fetch("/api/send-message", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ phone: selected.phone, message: msg })
-      });
-    } catch(e) {}
+    const text = newMsg; setNewMsg("");
+    // Optimistic
+    setMessages(prev => [...prev, { id: Date.now().toString(), conversation_id: selected.id, content: text, sender_type: 'agent', created_at: new Date().toISOString() } as any]);
+    await fetch("/api/send-message", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ conversation_id: selected.id, message: text })
+    });
   }
 
-  if (loading) return <div className="p-10 text-center">Loading real chats from Supabase...</div>;
+  // Agar WhatsApp connect nahi hai to Connect page dikhao
+  if (hasWhatsApp === false) {
+    return (
+      <div className="p-10 bg-white rounded-2xl border text-center">
+        <h2 className="text-xl font-bold mb-2">WhatsApp Connect Nahi Hai</h2>
+        <p className="text-sm text-gray-500 mb-6">Apna Inbox use karne ke liye pehle WhatsApp API connect karo.</p>
+        <div className="flex gap-3 justify-center">
+          <Link href="/integrations" className="bg-green-600 text-white px-6 py-3 rounded-full text-sm font-semibold">Connect with Facebook (Embedded)</Link>
+          <Link href="/settings/whatsapp" className="bg-gray-100 px-6 py-3 rounded-full text-sm">Manual: ID / Token / Phone ID</Link>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex bg-white rounded-2xl border border-gray-200 overflow-hidden" style={{ height: 'calc(100vh - 100px)' }}>
-      <div className="w- min-w- border-r bg-white flex flex-col">
-        <div className="p-4 border-b">
-          <h2 className="font-bold text-sm">Inbox • {contacts.length} chats</h2>
-        </div>
+    <div className="flex bg-white rounded-2xl border overflow-hidden" style={{ height: 'calc(100vh - 100px)' }}>
+      <div className="w- border-r flex flex-col">
+        <div className="p-4 border-b font-bold text-sm">Inbox • {convs.length} chats</div>
         <div className="flex-1 overflow-y-auto">
-          {contacts.length === 0? (
-            <div className="p-8 text-center">
-              <div className="text-3xl mb-2">💬</div>
-              <div className="text-sm text-gray-500">No contacts yet</div>
-              <div className="text-xs text-gray-400 mt-1">Webhook se ayenge</div>
-            </div>
-          ) : contacts.map(c => (
-            <div key={c.id} onClick={() => setSelected(c)} className={`p-4 border-b flex gap-3 cursor-pointer hover:bg-gray-50 ${selected?.id === c.id? 'bg-green-50 border-l-4 border-l-green-600' : 'border-l-4 border-l-transparent'}`}>
-              <div className="w-9 h-9 bg-green-100 text-green-700 rounded-full flex items-center justify-center font-bold text-xs shrink-0">{(c.name || c.phone || 'U')[0]}</div>
+          {convs.map(c => (
+            <div key={c.id} onClick={()=>setSelected(c)} className={`p-4 border-b flex gap-3 cursor-pointer ${selected?.id===c.id?'bg-green-50 border-l-4 border-l-green-600':'border-l-4 border-l-transparent'}`}>
+              <img src={c.contacts?.avatar_url || `https://ui-avatars.com/api/?name=${c.contacts?.name}`} className="w-9 h-9 rounded-full" />
               <div className="flex-1 min-w-0">
-                <div className="font-semibold text- truncate">{c.name || c.phone}</div>
-                <div className="text- text-gray-500 truncate">{c.last_message || c.phone}</div>
+                <div className="font-semibold text-sm truncate">{c.contacts?.name || c.contacts?.phone}</div>
+                <div className="text-xs text-gray-500 truncate">{c.contacts?.phone}</div>
               </div>
             </div>
           ))}
         </div>
       </div>
-      <div className="flex-1 flex flex-col min-w-0 bg-[#efeae2]">
-        {!selected? <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Select a chat to start LIVE messaging</div> : (
+      <div className="flex-1 flex flex-col bg-[#efeae2]">
+        {!selected? <div className="flex-1 flex items-center justify-center text-sm text-gray-400">Select a chat to start LIVE messaging</div> : (
           <>
-            <div className="h- bg-white border-b px-5 flex items-center justify-between shrink-0">
-              <div>
-                <div className="font-semibold text-sm">{selected.name || selected.phone}</div>
-                <div className="text-xs text-gray-500">{selected.phone}</div>
-              </div>
-              <span className="text-xs bg-green-100 text-green-700 px-3 py-1 rounded-full font-medium">● Live</span>
+            <div className="h-16 bg-white border-b px-5 flex items-center justify-between">
+              <div><div className="font-semibold text-sm">{selected.contacts?.name}</div><div className="text-xs text-gray-500">{selected.contacts?.phone}</div></div>
             </div>
             <div className="flex-1 overflow-y-auto p-5 space-y-3">
-              {messages.length === 0? <div className="text-center text-xs text-gray-400 mt-10">No messages yet. Say Hi!</div> : messages.map(m => (
-                <div key={m.id} className={`flex ${m.from_me? 'justify-end' : 'justify-start'}`}>
-                  <div className={`${m.from_me? 'bg-[#d9fdd3] rounded-tr-none' : 'bg-white rounded-tl-none'} rounded-lg px-3.5 py-2 text- max-w-[65%] shadow-sm`}>{m.message}</div>
+              {messages.map(m => (
+                <div key={m.id} className={`flex ${m.sender_type==='agent'?'justify-end':'justify-start'}`}>
+                  <div className={`${m.sender_type==='agent'?'bg-[#d9fdd3]':'bg-white'} rounded-lg px-3.5 py-2 text-sm max-w-[65%]`}>{m.content}</div>
                 </div>
               ))}
             </div>
-            <div className="bg-white p-3 flex gap-2 border-t shrink-0">
-              <input value={newMsg} onChange={e=>setNewMsg(e.target.value)} onKeyDown={e=>e.key==='Enter' && sendMessage()} placeholder="Type a real message..." className="flex-1 bg-gray-100 rounded-full px-5 py-3 text-sm outline-none" />
-              <button onClick={sendMessage} className="w-11 h-11 bg-green-600 hover:bg-green-700 text-white rounded-full flex items-center justify-center">➤</button>
+            <div className="bg-white p-3 flex gap-2 border-t">
+              <input value={newMsg} onChange={e=>setNewMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&sendMessage()} placeholder="Type..." className="flex-1 bg-gray-100 rounded-full px-5 py-3 text-sm outline-none" />
+              <button onClick={sendMessage} className="w-11 h-11 bg-green-600 text-white rounded-full">➤</button>
             </div>
           </>
         )}
