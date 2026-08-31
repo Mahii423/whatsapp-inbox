@@ -5,7 +5,7 @@ export default function MahiWALayout({ children }: { children: React.ReactNode }
   return (
     <div className="min-h-screen bg-[#f8f9fb]">
       <Sidebar />
-      <main className="md:ml- min-h-screen">
+      <main className="md:ml- min-h-screen p-6">
         {children}
       </main>
     </div>
