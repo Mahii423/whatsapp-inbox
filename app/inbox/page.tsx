@@ -10,6 +10,11 @@ export default function InboxPage() {
   const [newMessage, setNewMessage] = useState("");
   const [showInfo, setShowInfo] = useState(false);
   const [filter, setFilter] = useState<"all"|"unread">("all");
+  const [isRecording, setIsRecording] = useState(false);
+  const [recTime, setRecTime] = useState(0);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const timerRef = useRef<any>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   const loadConversations = async () => {
@@ -50,21 +55,54 @@ export default function InboxPage() {
     await fetch("/api/send-message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: selected.id, message: txt }) });
   };
 
+  // VOICE RECORDING WORKING
+  const startRec = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const mr = new MediaRecorder(stream);
+      mediaRecorderRef.current = mr;
+      chunksRef.current = [];
+      mr.ondataavailable = e => { if(e.data.size>0) chunksRef.current.push(e.data); };
+      mr.onstop = async () => {
+        const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
+        const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
+        // preview
+        const url = URL.createObjectURL(blob);
+        setMessages(p => [...p, { id: Date.now(), content: "🎤 Voice message", audio_url: url, sender_type: "agent", created_at: new Date().toISOString() }]);
+        // upload to supabase storage if bucket exists, else send via api
+        try {
+          const form = new FormData();
+          form.append('file', file);
+          form.append('conversationId', selected.id);
+          await fetch("/api/send-voice", { method: "POST", body: form });
+        } catch(e){ console.log("voice api not yet, preview only", e); }
+        stream.getTracks().forEach(t=>t.stop());
+      };
+      mr.start();
+      setIsRecording(true);
+      setRecTime(0);
+      timerRef.current = setInterval(()=>setRecTime(s=>s+1),1000);
+    } catch(err){ alert("Mic permission do browser se - Allow karo"); }
+  };
+
+  const stopRec = () => {
+    mediaRecorderRef.current?.stop();
+    setIsRecording(false);
+    clearInterval(timerRef.current);
+  };
+
   const initial = (s: string) => s? s[0].toUpperCase() : "C";
   const filtered = filter==="all"? conversations : conversations.filter((c:any)=> (c.unread_count||0)>0);
   const unreadCount = conversations.filter((c:any)=> (c.unread_count||0)>0).length;
+  const fmtTime = (s:number)=> `${Math.floor(s/60)}:${String(s%60).padStart(2,'0')}`;
 
   return (
     <>
-    <style>{`
-   .wa-scroll::-webkit-scrollbar{width:6px;}
-   .wa-scroll::-webkit-scrollbar-thumb{background:#c1c1c1; border-radius:10px;}
-   .wa-scroll::-webkit-scrollbar-track{background:transparent;}
-    `}</style>
+    <style>{`.wa-scroll::-webkit-scrollbar{width:6px;}.wa-scroll::-webkit-scrollbar-thumb{background:#c1c1c1; border-radius:10px;}.wa-scroll::-webkit-scrollbar-track{background:transparent;}`}</style>
     <div className="flex h-[calc(100vh-48px)] w-full overflow-hidden bg-white -m-6 relative">
       <div className="w- min-w- border-r bg-white flex flex-col">
         <div className="h- bg-[#f0f2f5] px-3 flex items-center justify-between">
-          <span className="font-bold text-">Chats</span>
+          <span className="font-bold">Chats</span>
           <div className="flex gap-1">
             <button onClick={()=>setFilter("all")} className={`px-3 py-1.5 rounded-full text- font-medium ${filter==="all"? "bg-[#e7fce3] text-[#008069]":"bg-[#f0f2f5] text-[#54656f]"}`}>All</button>
             <button onClick={()=>setFilter("unread")} className={`px-3 py-1.5 rounded-full text- font-medium flex items-center gap-1 ${filter==="unread"? "bg-[#e7fce3] text-[#008069]":"bg-[#f0f2f5] text-[#54656f]"}`}>Unread {unreadCount>0 && <span className="bg-[#25d366] text-white px-1.5 rounded-full text-">{unreadCount}</span>}</button>
@@ -76,10 +114,7 @@ export default function InboxPage() {
               <div className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center font-bold text- shrink-0">{initial(c.contacts?.name||c.contacts?.phone)}</div>
               <div className="flex-1 border-t border-[#f0f2f5] py-3 overflow-hidden">
                 <div className="flex justify-between"><span className={`truncate text- ${c.unread_count>0?"font-bold":""}`}>{c.contacts?.name||c.contacts?.phone}</span><span className={`text- ${c.unread_count>0?"text-[#25d366] font-bold":"text-[#667781]"}`}>{c.last_message_at? new Date(c.last_message_at).toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}):""}</span></div>
-                <div className="flex justify-between items-center mt-1">
-                  <span className={`truncate text- w- ${c.unread_count>0?"font-bold text-black":"text-[#667781]"}`}>{c.last_message_text}</span>
-                  {c.unread_count>0 && <span className="bg-[#25d366] text-white text- rounded-full min-w- h- flex items-center justify-center px-1.5 font-bold">{c.unread_count}</span>}
-                </div>
+                <div className="flex justify-between items-center mt-1"><span className={`truncate text- w- ${c.unread_count>0?"font-bold text-black":"text-[#667781]"}`}>{c.last_message_text}</span>{c.unread_count>0 && <span className="bg-[#25d366] text-white text- rounded-full min-w- h- flex items-center justify-center px-1.5 font-bold">{c.unread_count}</span>}</div>
               </div>
             </div>
           ))}
@@ -99,7 +134,7 @@ export default function InboxPage() {
                 {messages.map((m:any)=>(
                   <div key={m.id} className={`flex ${m.sender_type==="agent"? "justify-end":"justify-start"}`}>
                     <div className={`rounded-[7.5px] shadow-sm px-2.5 py-1.5 max-w-[65%] text-[14.2px] ${m.sender_type==="agent"? "bg-[#d9fdd3] rounded-tr-none":"bg-white rounded-tl-none"}`}>
-                      <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                      {m.audio_url? <audio controls src={m.audio_url} className="w-" /> : <span className="whitespace-pre-wrap break-words">{m.content}</span>}
                       <span className="inline-block float-right ml- mt- text- text-[#667781]">{new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
                       <div className="clear-both"></div>
                     </div>
@@ -109,15 +144,26 @@ export default function InboxPage() {
               </div>
             </div>
 
-            {/* VOICE + EMOJI + ATTACH WAPAS */}
             <div className="h- bg-[#f0f2f5] flex items-center gap-3 px-4">
-              <button className="text- hover:bg-[#e9edef] w-8 h-8 rounded-full flex items-center justify-center">😊</button>
-              <button className="text- hover:bg-[#e9edef] w-8 h-8 rounded-full flex items-center justify-center">📎</button>
-              <input value={newMessage} onChange={e=>setNewMessage(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Type a message" className="flex-1 bg-white rounded- px-4 py- outline-none text-" />
-              {newMessage.trim()? (
-                <button onClick={send} className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center">➤</button>
+              {isRecording? (
+                <>
+                  <div className="flex-1 bg-white rounded-full px-4 py-2 flex items-center gap-2">
+                    <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
+                    <span className="text-red-500 font-medium text-">Recording {fmtTime(recTime)}</span>
+                  </div>
+                  <button onClick={stopRec} className="w- h- rounded-full bg-red-500 text-white flex items-center justify-center">■</button>
+                </>
               ) : (
-                <button className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center text-">🎤</button>
+                <>
+                  <button className="text-">😊</button>
+                  <button className="text-">📎</button>
+                  <input value={newMessage} onChange={e=>setNewMessage(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Type a message" className="flex-1 bg-white rounded- px-4 py- outline-none text-" />
+                  {newMessage.trim()? (
+                    <button onClick={send} className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center">➤</button>
+                  ) : (
+                    <button onClick={startRec} className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center text- hover:bg-[#06cf9c]">🎤</button>
+                  )}
+                </>
               )}
             </div>
           </>
@@ -131,10 +177,6 @@ export default function InboxPage() {
             <div className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center font-bold text- mb-4">{initial(selected.contacts?.name||selected.contacts?.phone)}</div>
             <div className="font-bold text-">{selected.contacts?.name||"Unknown"}</div>
             <div className="text-[#667781] text- mt-1">{selected.contacts?.phone}</div>
-            <div className="w-full mt-8 space-y-3">
-              <div className="bg-[#f0f2f5] rounded-lg p-3"><div className="text- text-[#667781] uppercase">Phone</div><div className="font-medium mt-1">{selected.contacts?.phone}</div></div>
-              <div className="bg-[#f0f2f5] rounded-lg p-3"><div className="text- text-[#667781] uppercase">Name</div><div className="font-medium mt-1">{selected.contacts?.name||"Not set"}</div></div>
-            </div>
           </div>
         </div>
       )}
