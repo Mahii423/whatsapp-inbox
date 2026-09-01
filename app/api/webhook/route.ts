@@ -8,7 +8,7 @@ import {
 
 const VERIFY_TOKEN = process.env.WHATSAPP_VERIFY_TOKEN?.trim();
 
-function cleanEnv(value: string | undefined) {
+function cleanEnv(value: string | undefined): string | undefined {
   return value?.trim().replace(/^["']|["']$/g, "");
 }
 
@@ -19,125 +19,71 @@ function getServiceClient(): SupabaseClient | null {
   return createClient(url, key);
 }
 
-async function fetchWhatsAppProfilePic(customerPhone: string, accessToken: string): Promise<string | null> {
-  if (!accessToken) return null;
-  try {
-    const res = await fetch(
-      `https://graph.facebook.com/v18.0/${customerPhone}?fields=profile_picture&access_token=${accessToken}`
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.profile_picture?.url || null;
-  } catch {
-    return null;
-  }
-}
-
 function messageContent(message: any): string {
   const t = message?.type || "text";
   if (t === "text") return message?.text?.body || "";
-  if (t === "image") return message?.image?.caption || "[image]";
-  if (t === "video") return message?.video?.caption || "[video]";
-  if (t === "audio") return "[audio]";
-  if (t === "document") return message?.document?.filename || "[document]";
+  if (t === "image") return message?.image?.caption || "📷 Image";
+  if (t === "video") return message?.video?.caption || "🎥 Video";
+  if (t === "audio") return "🎤 Voice message";
+  if (t === "document") return `📄 ${message?.document?.filename || "Document"}`;
   return `[${t}]`;
 }
 
 async function handleStatuses(supabase: SupabaseClient, statuses: any[]) {
-  const results: any[] = [];
   for (const item of statuses) {
     const whatsappMessageId = item?.id;
     const incoming = normalizeWhatsAppStatus(item?.status);
     if (!whatsappMessageId ||!incoming) continue;
     const { data: existing } = await supabase.from("messages").select("id, status").eq("whatsapp_message_id", whatsappMessageId).maybeSingle();
     if (!existing) continue;
-    const nextStatus = nextDeliveryStatus(existing.status, incoming);
-    await supabase.from("messages").update({ status: nextStatus, status_error: nextStatus === "failed"? failedStatusError(item) : null }).eq("id", existing.id);
-    results.push({ updated: true, whatsappMessageId, status: nextStatus });
+    const nextStatus = nextDeliveryStatus((existing as any).status, incoming);
+    await supabase.from("messages").update({ status: nextStatus, status_error: nextStatus === "failed"? failedStatusError(item) : null }).eq("id", (existing as any).id);
   }
-  return results;
 }
 
 async function handleIncomingMessage(supabase: SupabaseClient, value: any, message: any) {
   const phoneNumberId = value?.metadata?.phone_number_id;
   const customerPhone = message?.from;
   const whatsappMessageId = message?.id;
-  const messageType = message?.type;
-  const contact = value.contacts?.[0];
+  const contact = value?.contacts?.[0];
   const customerName = contact?.profile?.name || customerPhone || "WhatsApp Customer";
+  if (!phoneNumberId ||!customerPhone ||!whatsappMessageId) return { error: "Missing data" };
 
-  if (!phoneNumberId ||!customerPhone ||!whatsappMessageId ||!messageType) {
-    return { error: "Missing data" };
-  }
+  const { data: whatsappAccount } = await supabase.from("whatsapp_accounts").select("id, workspace_id").eq("phone_number_id", phoneNumberId).maybeSingle();
+  if (!whatsappAccount) return { error: "Account not configured" };
 
-  const { data: whatsappAccount } = await supabase
-   .from("whatsapp_accounts")
-   .select("id, workspace_id, phone_number_id, access_token")
-   .eq("phone_number_id", phoneNumberId)
-   .maybeSingle();
-
-  if (!whatsappAccount) {
-    return { error: "WhatsApp account not configured", phone_number_id: phoneNumberId };
-  }
-
-  const workspaceId = whatsappAccount.workspace_id;
-
-  // FIX: workspace ka owner_id lao taake user_id daal sakein
+  const workspaceId = (whatsappAccount as any).workspace_id;
   const { data: workspace } = await supabase.from("workspaces").select("owner_id").eq("id", workspaceId).single();
-
   const content = messageContent(message);
-  const avatarUrl = await fetchWhatsAppProfilePic(customerPhone, whatsappAccount.access_token);
-
-  const { data: existingContact } = await supabase.from("contacts").select("id, name, avatar_url").eq("workspace_id", workspaceId).eq("phone", customerPhone).maybeSingle();
-  let contactId: string;
-
-  if (existingContact) {
-    contactId = existingContact.id;
-    const updates: any = {};
-    if (customerName && customerName!== customerPhone && customerName!== existingContact.name) updates.name = customerName;
-    if (avatarUrl && avatarUrl!== existingContact.avatar_url) updates.avatar_url = avatarUrl;
-    if (Object.keys(updates).length > 0) {
-      await supabase.from("contacts").update(updates).eq("id", contactId);
-    }
-  } else {
-    const { data: newContact } = await supabase.from("contacts").insert({
-      user_id: workspace?.owner_id,
-      workspace_id: workspaceId,
-      name: customerName,
-      phone: customerPhone,
-      avatar_url: avatarUrl,
-      status: "new",
-      source: "whatsapp"
-    }).select("id").single();
-    if (!newContact) return { error: "Contact creation failed" };
-    contactId = newContact.id;
-  }
-
-  const { data: existingConversation } = await supabase.from("conversations").select("id").eq("workspace_id", workspaceId).eq("contact_id", contactId).eq("whatsapp_account_id", whatsappAccount.id).maybeSingle();
-  let conversationId: string;
   const now = new Date().toISOString();
 
-  if (existingConversation) {
-    conversationId = existingConversation.id;
-    await supabase.from("conversations").update({ status: "open", last_message_at: now }).eq("id", conversationId);
-  } else {
-    const { data: newConversation } = await supabase.from("conversations").insert({ workspace_id: workspaceId, contact_id: contactId, whatsapp_account_id: whatsappAccount.id, status: "open", last_message_at: now }).select("id").single();
-    if (!newConversation) return { error: "Conversation creation failed" };
-    conversationId = newConversation.id;
+  const { data: existingContact } = await supabase.from("contacts").select("id").eq("workspace_id", workspaceId).eq("phone", customerPhone).maybeSingle();
+  let contactId: string | undefined = (existingContact as any)?.id;
+
+  if (!contactId) {
+    const { data: newContact } = await supabase.from("contacts").insert({ user_id: (workspace as any)?.owner_id, workspace_id: workspaceId, name: customerName, phone: customerPhone, status: "new", source: "whatsapp" }).select("id").single();
+    contactId = (newContact as any)?.id;
   }
 
-  const { data: existingMessage } = await supabase.from("messages").select("id").eq("whatsapp_message_id", whatsappMessageId).maybeSingle();
-  if (existingMessage) return { saved: true, duplicate: true, conversation_id: conversationId };
+  if (!contactId) return { error: "Contact ID missing" };
 
-  const { error: messageInsertError } = await supabase.from("messages").insert({
-    conversation_id: conversationId,
-    sender_type: "customer",
-    message_type: messageType,
-    content,
-    whatsapp_message_id: whatsappMessageId,
-  });
+  const { data: existingConv } = await supabase.from("conversations").select("id, unread_count").eq("workspace_id", workspaceId).eq("contact_id", contactId).eq("whatsapp_account_id", (whatsappAccount as any).id).maybeSingle();
+  let conversationId: string | undefined = (existingConv as any)?.id;
 
-  if (messageInsertError) return { error: "Message creation failed", details: messageInsertError.message };
+  if (conversationId) {
+    const currentUnread = Number((existingConv as any)?.unread_count || 0);
+    await supabase.from("conversations").update({ status: "open", last_message: content, last_message_text: content, last_message_at: now, unread_count: currentUnread + 1 }).eq("id", conversationId);
+  } else {
+    const { data: newConv } = await supabase.from("conversations").insert({ workspace_id: workspaceId, contact_id: contactId, whatsapp_account_id: (whatsappAccount as any).id, status: "open", last_message: content, last_message_text: content, last_message_at: now, unread_count: 1 }).select("id").single();
+    conversationId = (newConv as any)?.id;
+  }
+
+  if (!conversationId) return { error: "Conversation ID missing" };
+
+  const { data: dup } = await supabase.from("messages").select("id").eq("whatsapp_message_id", whatsappMessageId).maybeSingle();
+  if (dup) return { duplicate: true };
+
+  await supabase.from("messages").insert({ conversation_id: conversationId, sender_type: "customer", message_type: message?.type || "text", content: content, whatsapp_message_id: whatsappMessageId, status: "delivered" });
   return { saved: true, conversation_id: conversationId };
 }
 
@@ -152,23 +98,21 @@ export async function GET(request: NextRequest) {
 export async function POST(request: NextRequest) {
   const supabase = getServiceClient();
   if (!supabase) return NextResponse.json({ error: "Missing SERVICE_ROLE_KEY" }, { status: 500 });
-
   const body = await request.json();
   const entries = Array.isArray(body?.entry)? body.entry : [];
   const messageResults: any[] = [];
-  const statusResults: any[] = [];
-
   for (const entry of entries) {
     for (const change of entry?.changes || []) {
       const value = change?.value;
       if (!value) continue;
-      if (value.statuses?.length > 0) statusResults.push(...(await handleStatuses(supabase, value.statuses)));
+      if (value.statuses?.length > 0) { await handleStatuses(supabase, value.statuses); }
       if (value.messages?.length > 0) {
         for (const msg of value.messages) {
-          messageResults.push(await handleIncomingMessage(supabase, value, msg));
+          const res = await handleIncomingMessage(supabase, value, msg);
+          messageResults.push(res);
         }
       }
     }
   }
-  return NextResponse.json({ received: true, messages: messageResults, statuses: statusResults });
+  return NextResponse.json({ received: true, messages: messageResults });
 }
