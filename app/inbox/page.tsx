@@ -113,11 +113,8 @@ export default function InboxPage() {
                 {messages.map((m:any)=>(
                   <div key={m.id} className={`flex ${m.sender_type==="agent"?"justify-end":"justify-start"}`}>
                     <div className={`rounded-[7.5px] shadow-sm px-2.5 py-1.5 max-w-[65%] ${m.sender_type==="agent"?"bg-[#d9fdd3] rounded-tr-none":"bg-white rounded-tl-none"}`}>
-                      {/* FIXED VOICE LOGIC */}
                       {(m.message_type==="audio" || m.audio_url)? (
-                        <div className="flex items-center gap-2 min-w-">
-                          <audio controls src={m.audio_url || m.media_url} className="w- h-8" preload="metadata" />
-                        </div>
+                        <audio controls src={m.audio_url || m.media_url} className="w-" />
                       ) : (
                         <span className="text-[14.2px] whitespace-pre-wrap break-words">{m.content}</span>
                       )}
@@ -133,7 +130,7 @@ export default function InboxPage() {
               {isRecording?(
                 <><div className="flex-1 bg-white rounded-full px-4 py-2 flex gap-2 items-center"><div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div><span className="text-red-500 text-">Recording {fmt(recTime)}</span></div><button onClick={stopRec} className="w- h- rounded-full bg-red-500 text-white">■</button></>
               ):(
-                <><button className="text-">😊</button><button className="text-">📎</button><input value={newMessage} onChange={e=>setNewMessage(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Type a message" className="flex-1 bg-white rounded- px-4 py- outline-none text-"/>{newMessage.trim()?<button onClick={send} className="w- h- rounded-full bg-[#00a884] text-white">➤</button>:<button onClick={startRec} className="w- h- rounded-full bg-[#00a884] text-white text-">🎤</button>}</>
+                <><button className="text-">😊</button><button className="text-">📎</button><input value={newMessage} onChange={e=>setNewMessage(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Type a message" className="flex-1 bg-white rounded- px-4 py-2.5 outline-none text-"/>{newMessage.trim()?<button onClick={send} className="w- h- rounded-full bg-[#00a884] text-white">➤</button>:<button onClick={startRec} className="w- h- rounded-full bg-[#00a884] text-white text-">🎤</button>}</>
               )}
             </div>
           </>
