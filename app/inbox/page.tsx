@@ -62,8 +62,8 @@ export default function InboxPage() {
   }
 
   return (
-    <div className="flex bg-white rounded-2xl border overflow-hidden" style={{ height: 'calc(100vh - 100px)' }}>
-      <div className="w- border-r flex flex-col shrink-0">
+    <div className="flex w-full bg-white rounded-2xl border overflow-hidden" style={{ height: 'calc(100vh - 100px)' }}>
+      <div className="w- border-r flex flex-col shrink-0 bg-white">
         <div className="p-4 border-b font-bold text-sm">Inbox • {convs.length} chats</div>
         <div className="flex-1 overflow-y-auto">
           {convs.map(c => (
