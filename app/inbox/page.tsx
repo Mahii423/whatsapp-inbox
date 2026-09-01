@@ -1,200 +1,324 @@
 "use client";
-import { useEffect, useState, useMemo, useRef } from "react";
-import { supabase } from "@/lib/supabase";
 
-type Contact = { id:string; name:string; phone:string; avatar_url?: string };
-type Conv = { id:string; contact_id:string; contacts:Contact|null; last_message_at:string; last_msg?:string; unread?:number }
-type Msg = { id:string; conversation_id:string; content:string; sender_type:string; created_at:string; status?:string }
+import { useEffect, useState, useRef, useMemo } from "react";
+import { createClient } from "@supabase/supabase-js";
 
-export default function InboxPage(){
-  const [convs,setConvs]=useState<Conv[]>([]);
-  const [selected,setSelected]=useState<Conv|null>(null);
-  const [messages,setMessages]=useState<Msg[]>([]);
-  const [newMsg,setNewMsg]=useState("");
-  const [search,setSearch]=useState("");
-  const [filter,setFilter]=useState<'all'|'unread'|'favorites'|'groups'>('all');
-  const endRef=useRef<HTMLDivElement>(null);
-  const scrollRef=useRef<HTMLDivElement>(null);
+// Supabase Client
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL!,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+);
 
-  useEffect(()=>{ endRef.current?.scrollIntoView({behavior:'smooth'}); },[messages]);
+type Contact = {
+  id: string;
+  name: string;
+  phone: string;
+  avatar_url?: string;
+};
 
-  // Load conversations with live last message
-  useEffect(()=>{
-    (async()=>{
-      const {data: convsRaw} = await supabase.from("conversations").select("id,contact_id,last_message_at").order("last_message_at",{ascending:false}).limit(100);
-      if(!convsRaw?.length) return;
-      const contactIds = convsRaw.map(c=>c.contact_id);
-      const {data: contactsRaw} = await supabase.from("contacts").select("id,name,phone,avatar_url").in("id",contactIds);
-      const {data: lastMsgs} = await supabase.from("messages").select("conversation_id,content,created_at,sender_type").in("conversation_id", convsRaw.map(c=>c.id)).order("created_at",{ascending:false});
+type Conversation = {
+  id: string;
+  contact_id: string;
+  last_message: string;
+  last_message_at: string;
+  unread_count: number;
+  is_favorite?: boolean;
+  is_group?: boolean;
+  contacts: Contact;
+};
 
-      const merged:Conv[] = convsRaw.map((c:any)=>{
-        const contact = contactsRaw?.find(x=>x.id===c.contact_id)||{id:c.contact_id, name:c.contact_id, phone:c.contact_id};
-        const last = lastMsgs?.filter((m:any)=>m.conversation_id===c.id)[0];
-        // for demo unread
-        const unread = Math.random()>0.6? Math.floor(Math.random()*3)+1 : 0;
-        return { id:c.id, contact_id:c.contact_id, contacts:contact as any, last_message_at: last?.created_at || c.last_message_at, last_msg: last?.content || contact.phone, unread: unread };
-      });
-      setConvs(merged);
-      if(merged.length>0) setSelected(merged[0]);
-    })();
-  },[]);
+type Message = {
+  id: string;
+  conversation_id: string;
+  content: string;
+  sender: "agent" | "user";
+  created_at: string;
+  status: "sent" | "delivered" | "read";
+};
 
-  // Load messages
-  useEffect(()=>{
-    if(!selected?.id) return;
-    (async()=>{
-      const {data} = await supabase.from("messages").select("*").eq("conversation_id",selected.id).order("created_at",{ascending:true});
-      if(data) setMessages(data as any);
-    })();
-  },[selected]);
+const FILTERS = ["All", "Unread", "Favorites", "Groups"] as const;
 
-  // Realtime - last message update jaisa original WhatsApp
-  useEffect(()=>{
-    const channel = supabase.channel('inbox-live')
-     .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages'},(payload:any)=>{
-        const m = payload.new as Msg;
-        // update conv list
-        setConvs(prev=> prev.map(c=>{
-          if(c.id===m.conversation_id){
-            return {...c, last_msg:m.content, last_message_at:m.created_at, unread: c.id!==selected?.id? (c.unread||0)+1 : 0 };
+export default function InboxPage() {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [activeFilter, setActiveFilter] = useState<(typeof FILTERS)[number]>("All");
+  const [newMessage, setNewMessage] = useState("");
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const selectedConv = useMemo(
+    () => conversations.find((c) => c.id === selectedId),
+    [conversations, selectedId]
+  );
+
+  // 1. Fetch Conversations
+  const fetchConversations = async () => {
+    const { data, error } = await supabase
+     .from("conversations")
+     .select("*, contacts(*)")
+     .order("last_message_at", { ascending: false });
+    if (!error && data) setConversations(data as any);
+  };
+
+  useEffect(() => {
+    fetchConversations();
+
+    // 4. REALTIME: Last message and time live update
+    const channel = supabase
+     .channel("whatsapp-inbox-realtime")
+     .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "conversations" },
+        () => fetchConversations()
+      )
+     .on(
+        "postgres_changes",
+        { event: "INSERT", schema: "public", table: "messages" },
+        (payload) => {
+          const msg = payload.new as Message;
+          // Update messages if selected chat is same
+          if (msg.conversation_id === selectedId) {
+            setMessages((prev) => [...prev, msg]);
           }
-          return c;
-        }).sort((a,b)=> new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()));
-        // update current chat
-        if(selected?.id===m.conversation_id){
-          setMessages(prev=>[...prev,m]);
+          fetchConversations();
         }
-      }).subscribe();
-    return ()=>{ supabase.removeChannel(channel); }
-  },[selected]);
+      )
+     .subscribe();
 
-  async function send(){
-    if(!newMsg.trim()||!selected) return;
-    const text=newMsg; setNewMsg("");
-    const temp:Msg = {id:Date.now().toString(), conversation_id:selected.id, content:text, sender_type:'agent', created_at:new Date().toISOString(), status:'sent'};
-    setMessages(p=>[...p,temp]);
-    setConvs(prev=> prev.map(c=> c.id===selected.id? {...c, last_msg:text, last_message_at:new Date().toISOString()} : c).sort((a,b)=> new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()));
-    await fetch("/api/send-message",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conversation_id:selected.id,message:text})});
-  }
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [selectedId]);
 
-  const filtered = useMemo(()=>{
-    let list = [...convs];
-    if(search) list = list.filter(c=> c.contacts?.name.toLowerCase().includes(search.toLowerCase()) || c.contacts?.phone.includes(search));
-    if(filter==='unread') list = list.filter(c=> (c.unread||0)>0);
-    return list;
-  },[convs,search,filter]);
+  // Fetch Messages for selected chat
+  useEffect(() => {
+    if (!selectedId) return;
+    const fetchMessages = async () => {
+      const { data } = await supabase
+       .from("messages")
+       .select("*")
+       .eq("conversation_id", selectedId)
+       .order("created_at", { ascending: true });
+      if (data) setMessages(data as any);
+    };
+    fetchMessages();
+  }, [selectedId]);
 
-  const unreadCount = convs.reduce((a,c)=>a+(c.unread||0),0);
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  return(
-    <div className="flex w-full bg-white rounded-2xl border overflow-hidden shadow-sm" style={{height:'calc(100vh - 75px)'}}>
-      <style>{`
-       .wa-scroll{ overflow-y:auto; overflow-x:hidden; }
-       .wa-scroll::-webkit-scrollbar{ width:6px; }
-       .wa-scroll::-webkit-scrollbar-thumb{ background:#c1c1c1; border-radius:10px; }
-       .wa-scroll::-webkit-scrollbar-track{ background:transparent; }
-       .wa-scroll{ scrollbar-width:thin; scrollbar-color:#c1c1c1 transparent; }
-      `}</style>
+  // Filter + Search Logic
+  const filteredConversations = useMemo(() => {
+    return conversations.filter((c) => {
+      const matchesSearch =
+        c.contacts.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        c.contacts.phone.includes(searchQuery);
+      if (!matchesSearch) return false;
+      if (activeFilter === "Unread") return c.unread_count > 0;
+      if (activeFilter === "Favorites") return c.is_favorite;
+      if (activeFilter === "Groups") return c.is_group;
+      return true;
+    });
+  }, [conversations, searchQuery, activeFilter]);
 
-      {/* LEFT - EXACT WA WEB */}
-      <div className="w- flex flex-col bg-white border-r shrink-0">
-        {/* Header */}
-        <div className="h- px-4 flex items-center justify-between bg-[#f0f2f5]">
-          <h1 className="font-bold text-">WhatsApp</h1>
-          <div className="flex gap-2 text-[#54656f] text-xl">
-            <button className="w-9 h-9 rounded-full hover:bg-gray-200 flex items-center justify-center">⧉</button>
-            <button className="w-9 h-9 rounded-full hover:bg-gray-200 flex items-center justify-center">⋮</button>
+  const unreadTotal = conversations.reduce((acc, c) => acc + (c.unread_count > 0? 1 : 0), 0);
+
+  const handleSend = async () => {
+    if (!newMessage.trim() ||!selectedId ||!selectedConv) return;
+
+    const tempMsg: Message = {
+      id: Date.now().toString(),
+      conversation_id: selectedId,
+      content: newMessage,
+      sender: "agent",
+      created_at: new Date().toISOString(),
+      status: "sent",
+    };
+
+    setMessages(prev => [...prev, tempMsg]);
+    setNewMessage("");
+
+    // Call your API route
+    await fetch("/api/send-message", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        conversation_id: selectedId,
+        phone: selectedConv.contacts.phone,
+        message: tempMsg.content,
+      }),
+    });
+  };
+
+  return (
+    <div className="flex h-screen w-screen overflow-hidden bg-[#111b21] font-[Segoe_UI,Helvetica_Lucida_Grande,Lucida_Sans_Unicode,sans-serif]">
+
+      {/* LEFT PANEL */}
+      <div className="flex w-[30%] min-w- max-w- flex-col border-r border-[#e9edef] bg-white">
+        {/* 1. Left Header */}
+        <div className="flex h- items-center justify-between bg-[#f0f2f5] px-4">
+          <h1 className="text- font-bold text-[#111b21]">WhatsApp</h1>
+          <div className="flex gap-5 text-[#54656f]">
+            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M12.072 0a12.072 12.072 0 0 0-12.072 12.072c0 5.115 3.22 9.485 7.745 11.177l-0.53-4.66a7.44 7.44 0 0 1-2.28-5.37c0-4.11 3.33-7.44 7.44-7.44s7.44 3.33 7.44 7.44a7.44 7.44 0 0 1-4.21 6.69l-0.53 4.66c4.525-1.692 7.745-6.062 7.745-11.177C24.144 5.403 18.74 0 12.072 0z"/></svg>
           </div>
         </div>
 
-        <div className="p-3 bg-white space-y-3">
-          <div className="relative">
-            <span className="absolute left-3 top- text-[#54656f] text-">⌕</span>
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search or start new chat" className="w-full bg-[#f0f2f5] rounded- pl-10 pr-3 py- text- outline-none placeholder-[#667781]"/>
-          </div>
-          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
-            <button onClick={()=>setFilter('all')} className={`px-3 py- rounded-full text- font-medium whitespace-nowrap ${filter==='all'?'bg-[#e7fce3] text-[#008a6c]':'bg-[#f0f2f5] text-[#54656f]'}`}>All</button>
-            <button onClick={()=>setFilter('unread')} className={`px-3 py- rounded-full text- font-medium whitespace-nowrap ${filter==='unread'?'bg-[#e7fce3] text-[#008a6c]':'bg-[#f0f2f5] text-[#54656f]'}`}>Unread {unreadCount>0?unreadCount:''}</button>
-            <button className="px-3 py- rounded-full text- font-medium whitespace-nowrap bg-[#f0f2f5] text-[#54656f]">Favorites</button>
-            <button className="px-3 py- rounded-full text- font-medium whitespace-nowrap bg-[#f0f2f5] text-[#54656f]">Groups</button>
-            <button className="w-7 h-7 rounded-full bg-[#f0f2f5] text-[#54656f] flex items-center justify-center shrink-0">+</button>
+        {/* Search Bar */}
+        <div className="bg-white p-3">
+          <div className="flex h- items-center gap-3 rounded- bg-[#f0f2f5] px-3">
+            <svg viewBox="0 0 24 24" width="18" height="18" className="text-[#54656f]"><path fill="currentColor" d="M15.009 13.805h-.636l-.22-.219a5.184 5.184 0 0 0 1.256-3.386 5.207 5.207 0 1 0-5.207 5.208 5.183 5.183 0 0 0 3.385-1.255l.221.22v.635l4.003 4.002 1.195-1.195-4.002-4.003zm-4.808 0a3.605 3.605 0 1 1 0-7.21 3.605 3.605 0 0 1 0 7.21z"/></svg>
+            <input
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search or start new chat"
+              className="w-full bg-transparent text- text-[#111b21] outline-none placeholder:text-[#667781]"
+            />
           </div>
         </div>
 
-        {/* Chat List - with live last message like original */}
-        <div ref={scrollRef} className="flex-1 wa-scroll">
-          {filtered.map(c=>{
-            const isActive = selected?.id===c.id;
-            const time = new Date(c.last_message_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
-            const dateLabel = new Date(c.last_message_at).toDateString()===new Date().toDateString()? time : new Date(c.last_message_at).toLocaleDateString();
-            return(
-              <div key={c.id} onClick={()=>{setSelected(c); setConvs(prev=>prev.map(x=>x.id===c.id?{...x,unread:0}:x))}} className={`h- px-3 flex items-center gap-3 cursor-pointer hover:bg-[#f5f6f6] border-t border-[#f0f2f5] ${isActive?'bg-[#f0f2f5]':''}`}>
-                <img src={c.contacts?.avatar_url||`https://ui-avatars.com/api/?name=${encodeURIComponent(c.contacts?.name||'U')}&background=${isActive?'#dfe5e7':'#dfe5e7'}&color=#54656f`} className="w- h- rounded-full shrink-0" alt=""/>
-                <div className="flex-1 min-w-0 py-1">
-                  <div className="flex justify-between items-center">
-                    <span className="font-[400] text- leading-5 truncate text-[#111b21]">{c.contacts?.name||c.contacts?.phone}</span>
-                    <span className="text- text-[#667781] shrink-0 ml-2">{dateLabel}</span>
+        {/* 2. Filters Chips */}
+        <div className="flex gap-2 overflow-x-auto bg-white px-3 pb-3 scrollbar-none">
+          {FILTERS.map((filter) => (
+            <button
+              key={filter}
+              onClick={() => setActiveFilter(filter)}
+              className={`flex h- shrink-0 items-center justify-center rounded-full px-3 text- transition ${
+                activeFilter === filter
+                 ? "bg-[#e7fce3] text-[#008069]"
+                  : "bg-[#f0f2f5] text-[#54656f] hover:bg-[#e9edef]"
+              }`}
+            >
+              {filter} {filter === "Unread" && unreadTotal > 0? ` ${unreadTotal}` : ""}
+            </button>
+          ))}
+          <button className="flex h- w- shrink-0 items-center justify-center rounded-full bg-[#f0f2f5] text-[#54656f]">+</button>
+        </div>
+
+        {/* 3. Chat List */}
+        <div className="wa-scroll flex-1 overflow-y-auto bg-white">
+          {filteredConversations.map((conv) => (
+            <div
+              key={conv.id}
+              onClick={() => setSelectedId(conv.id)}
+              className={`flex h- cursor-pointer items-center gap-3 px-3 hover:bg-[#f5f6f6] ${
+                selectedId === conv.id? "bg-[#f0f2f5]" : ""
+              }`}
+            >
+              <img
+                src={conv.contacts.avatar_url || `https://i.pravatar.cc/150?u=${conv.contacts.phone}`}
+                className="h- w- rounded-full object-cover"
+                alt="avatar"
+              />
+              <div className="flex flex-1 flex-col justify-center border-t border-[#e9edef] py-3">
+                <div className="flex justify-between">
+                  <span className="text- leading- text-[#111b21]">{conv.contacts.name}</span>
+                  <span className="text- leading- text-[#667781]">
+                    {new Date(conv.last_message_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                </div>
+                <div className="flex justify-between pt-1">
+                  <div className="flex items-center gap-1 overflow-hidden">
+                    <span className="text-[#53bdeb] text-">✓✓</span>
+                    <span className="truncate text- leading- text-[#667781]">{conv.last_message}</span>
                   </div>
-                  <div className="flex justify-between items-center mt-1">
-                    <div className="flex items-center gap-1 min-w-0">
-                      <span className="text-[#53bdeb] text-">✓✓</span>
-                      <span className="text- text-[#667781] truncate">{c.last_msg}</span>
-                    </div>
-                    {c.unread? <span className="bg-[#25d366] text-white text- min-w- h-5 rounded-full flex items-center justify-center px-1.5 font-bold ml-2">{c.unread}</span> : null}
-                  </div>
+                  {conv.unread_count > 0 && (
+                    <span className="flex h- min-w- items-center justify-center rounded-full bg-[#25d366] px- text- font-medium text-white">
+                      {conv.unread_count}
+                    </span>
+                  )}
                 </div>
               </div>
-            )
-          })}
+            </div>
+          ))}
         </div>
       </div>
 
-      {/* RIGHT - Chat */}
-      <div className="flex-1 flex flex-col" style={{backgroundColor:'#efeae2', backgroundImage:`url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")`, backgroundSize:'contain'}}>
-        {!selected? <div className="flex-1 flex items-center justify-center text-[#667781]">Select a chat</div> : (
+      {/* RIGHT CHAT PANEL */}
+      <div className="flex flex-1 flex-col">
+        {selectedConv? (
           <>
-            {/* Top Bar - exact WA */}
-            <div className="h- bg-[#f0f2f5] border-l px-4 flex items-center justify-between shrink-0">
+            {/* 5. Top bar 59px */}
+            <div className="flex h- items-center justify-between bg-[#f0f2f5] px-4">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-[#dfe5e7] flex items-center justify-center font-bold text-[#54656f]">{selected.contacts?.name?.[0]?.toUpperCase()||'O'}</div>
-                <div><div className="font-semibold text- text-[#111b21]">{selected.contacts?.name||selected.contacts?.phone}</div><div className="text- text-[#667781]">{selected.contacts?.phone}</div></div>
-              </div>
-              <div className="flex items-center gap-1">
-                <button className="border bg-white rounded-full px-3 py-1 text-">◧ Add to list ⌄</button>
-                <button className="w-10 h-10 flex items-center justify-center text-[#54656f]">⌕</button>
-                <button className="w-8 h-8 flex items-center justify-center text-[#54656f]">⋮</button>
-              </div>
-            </div>
-
-            {/* Messages - Original WA bubble style */}
-            <div className="flex-1 wa-scroll p-5 space-y-1">
-              {messages.map(m=>(
-                <div key={m.id} className={`flex ${m.sender_type==='agent'?'justify-end':'justify-start'}`}>
-                  <div className={`relative max-w-[65%] rounded-[7.5px] shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] px-2 pt- pb- ${m.sender_type==='agent'?'bg-[#d9fdd3] rounded-tr-none':'bg-white rounded-tl-none'}`}>
-                    <span className="text-[14.2px] leading- text-[#111b21] whitespace-pre-wrap break-words">{m.content}</span>
-                    <span className="inline-block float-right ml-3 mt- -mb-1 select-none">
-                      <span className="text- leading- text-[#667781]">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
-                      {m.sender_type==='agent'&&<span className="text- text-[#53bdeb] ml-1">✓✓</span>}
-                    </span>
-                    <div className="clear-both"></div>
-                  </div>
+                <img src={selectedConv.contacts.avatar_url || `https://i.pravatar.cc/150?u=${selectedConv.contacts.phone}`} className="h- w- rounded-full" alt="" />
+                <div>
+                  <div className="text- font-semibold text-[#111b21]">{selectedConv.contacts.name}</div>
+                  <div className="text- text-[#667781]">{selectedConv.contacts.phone}</div>
                 </div>
-              ))}
-              <div ref={endRef}/>
+              </div>
+              <button className="rounded- border border-[#e9edef] bg-white px-3 py-1.5 text- text-[#008069]">+ Add to list</button>
             </div>
 
-            {/* Input - Original WA Web */}
-            <div className="bg-[#f0f2f5] px-4 py- flex items-center gap-3 shrink-0 border-l">
-              <button className="text- text-[#54656f] w-7 h-7 flex items-center justify-center">+</button>
-              <button className="text- text-[#54656f] w-7 h-7 flex items-center justify-center">☺</button>
-              <div className="flex-1 bg-white rounded- px-4 py- flex items-center"><input value={newMsg} onChange={e=>setNewMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="Type a message" className="flex-1 text- outline-none placeholder-[#667781]"/><button className="ml-2 text-[#54656f]">🙂</button></div>
-              <button className="text-[#54656f] text-">◷</button>
-              <button className="text-[#54656f] text-">📎</button>
-              {newMsg.trim()? <button onClick={send} className="w-10 h-10 bg-[#25d366] rounded-full flex items-center justify-center text-white text-">➤</button> : <button className="w-10 h-10 flex items-center justify-center text-[#54656f] text-">🎙️</button>}
+            {/* Chat Background #efeae2 with doodle */}
+            <div className="relative flex-1 overflow-y-auto bg-[#efeae2] p-5 wa-scroll"
+                 style={{ backgroundImage: `url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png')`, backgroundRepeat: 'repeat' }}>
+
+              <div className="mx-auto flex max-w- flex-col gap-1">
+                {messages.map((msg) => (
+                  <div key={msg.id} className={`flex ${msg.sender === "agent"? "justify-end" : "justify-start"}`}>
+                    <div
+                      className={`relative max-w-[65%] rounded-[7.5px] px- pb- pt- shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] ${
+                        msg.sender === "agent"? "bg-[#d9fdd3]" : "bg-white"
+                      }`}
+                    >
+                      {/* Bubble Text MUST 14.2px */}
+                      <span className="bubble-text whitespace-pre-wrap break-words text-[14.2px] leading- text-[#111b21]">
+                        {msg.content}
+                        <span className="invisible ml-2 text-">00:00 ✓✓</span>
+                      </span>
+                      {/* Bubble Time MUST 11px float-right inside bubble, no overlap */}
+                      <span className="bubble-time absolute bottom- right- float-right ml-2 flex items-end gap-1 text- leading- text-[#667781]">
+                        {new Date(msg.created_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {msg.sender === "agent" && <span className="text-[#53bdeb]">✓✓</span>}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+                <div ref={messagesEndRef} />
+              </div>
+            </div>
+
+            {/* Input bar #f0f2f5 */}
+            <div className="flex h- items-center gap-3 bg-[#f0f2f5] px-4">
+              <button className="text- text-[#54656f]">+</button>
+              <button className="text-[#54656f]"><svg viewBox="0 0 24 24" width="26" height="26"><path fill="currentColor" d="M12 0a12 12 0 1 0 0 24 12 12 0 0 0 0-24zm0 20.4a8.4 8.4 0 1 1 0-16.8 8.4 8.4 0 0 1 0 16.8z"/></svg></button>
+
+              <div className="flex flex-1 items-center rounded- bg-white px-3 py-2">
+                <input
+                  value={newMessage}
+                  onChange={(e) => setNewMessage(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                  placeholder="Type a message"
+                  className="w-full bg-transparent text- text-[#111b21] outline-none placeholder:text-[#667781]"
+                />
+              </div>
+
+              <button className="text-[#54656f]"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M1.5 4.5A2.5 2.5 0 0 1 4 2h16a2.5 2.5 0 0 1 2.5 2.5v15A2.5 2.5 0 0 1 20 22H4a2.5 2.5 0 0 1-2.5-2.5v-15z"/></svg></button>
+
+              <button onClick={handleSend} className="flex h- w- items-center justify-center rounded-full bg-[#25d366] text-white">
+                {newMessage? (
+                  <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M1.101 21.757 23.8 12.028 1.101 2.3l.011 7.912 13.623 1.816-13.623 1.817-.011 7.912z"/></svg>
+                ) : (
+                  <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M11.999 14.942c2.349 0 4.252-1.903 4.252-4.252S14.348 6.438 11.999 6.438s-4.252 1.903-4.252 4.252 1.903 4.252 4.252 4.252z"/></svg>
+                )}
+              </button>
             </div>
           </>
+        ) : (
+          <div className="flex flex-1 items-center justify-center bg-[#f0f2f5] text-[#667781]">Select a chat to start messaging</div>
         )}
       </div>
+
+      <style jsx global>{`
+       .wa-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+       .wa-scroll::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 10px; }
+       .wa-scroll::-webkit-scrollbar-track { background: transparent; }
+       .scrollbar-none::-webkit-scrollbar { display: none; }
+       .bubble-text { font-family: Segoe UI, Helvetica Neue, Helvetica, Lucida Grande, Arial, sans-serif; }
+       .bubble-time { font-family: Segoe UI, Helvetica Neue, Helvetica, Lucida Grande, Arial, sans-serif; }
+      `}</style>
     </div>
   );
 }
