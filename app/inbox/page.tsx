@@ -57,10 +57,9 @@ export default function InboxPage() {
   return (
     <>
     <style>{`
-    .wa-scroll::-webkit-scrollbar{width:6px;}
-    .wa-scroll::-webkit-scrollbar-thumb{background:#c1c1c1; border-radius:10px;}
-    .wa-scroll::-webkit-scrollbar-thumb:hover{background:#a8a8a8;}
-    .wa-scroll::-webkit-scrollbar-track{background:transparent;}
+   .wa-scroll::-webkit-scrollbar{width:6px;}
+   .wa-scroll::-webkit-scrollbar-thumb{background:#c1c1c1; border-radius:10px;}
+   .wa-scroll::-webkit-scrollbar-track{background:transparent;}
     `}</style>
     <div className="flex h-[calc(100vh-48px)] w-full overflow-hidden bg-white -m-6 relative">
       <div className="w- min-w- border-r bg-white flex flex-col">
@@ -86,13 +85,15 @@ export default function InboxPage() {
           ))}
         </div>
       </div>
+
       <div className="flex flex-1 flex-col">
         {!selected? <div className="flex-1 bg-[#f0f2f5] flex items-center justify-center text-[#667781]">Select chat - LIVE ●</div> : (
           <>
             <div onClick={()=>setShowInfo(!showInfo)} className="h- bg-[#f0f2f5] px-4 flex items-center gap-3 border-l cursor-pointer">
               <div className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center font-bold">{initial(selected.contacts?.name||"")}</div>
-              <div><div className="font-semibold text-">{selected.contacts?.name||"Unknown"}</div><div className="text- text-[#667781]">{selected.contacts?.phone}</div></div>
+              <div><div className="font-semibold text-">{selected.contacts?.name||"Unknown"}</div><div className="text- text-[#667781]">{selected.contacts?.phone} • Click to view</div></div>
             </div>
+
             <div className="flex-1 overflow-y-auto p-4 bg-[#efeae2] wa-scroll" style={{backgroundImage:`url('https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png')`}}>
               <div className="max-w- mx-auto flex flex-col gap-1">
                 {messages.map((m:any)=>(
@@ -107,13 +108,22 @@ export default function InboxPage() {
                 <div ref={endRef} />
               </div>
             </div>
-            <div className="h- bg-[#f0f2f5] flex items-center gap-2 px-4">
+
+            {/* VOICE + EMOJI + ATTACH WAPAS */}
+            <div className="h- bg-[#f0f2f5] flex items-center gap-3 px-4">
+              <button className="text- hover:bg-[#e9edef] w-8 h-8 rounded-full flex items-center justify-center">😊</button>
+              <button className="text- hover:bg-[#e9edef] w-8 h-8 rounded-full flex items-center justify-center">📎</button>
               <input value={newMessage} onChange={e=>setNewMessage(e.target.value)} onKeyDown={e=>e.key==="Enter"&&send()} placeholder="Type a message" className="flex-1 bg-white rounded- px-4 py- outline-none text-" />
-              <button onClick={send} className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center">➤</button>
+              {newMessage.trim()? (
+                <button onClick={send} className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center">➤</button>
+              ) : (
+                <button className="w- h- rounded-full bg-[#00a884] text-white flex items-center justify-center text-">🎤</button>
+              )}
             </div>
           </>
         )}
       </div>
+
       {showInfo && selected && (
         <div className="w- min-w- border-l bg-white flex flex-col shadow-xl">
           <div className="h- bg-[#f0f2f5] px-4 flex items-center justify-between"><span className="font-bold">Contact Info</span><button onClick={()=>setShowInfo(false)} className="w-8 h-8 rounded-full bg-white flex items-center justify-center">✕</button></div>
