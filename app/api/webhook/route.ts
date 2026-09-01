@@ -1,9 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../utils/supabase/client";
+import { createClient } from "@supabase/supabase-js";
 
 export async function POST(req: NextRequest) {
   const body = await req.json();
-  const supabase = createClient() as any;
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  );
+
   const token = process.env.WHATSAPP_TOKEN;
 
   for (const entry of body.entry || []) {
@@ -15,7 +20,6 @@ export async function POST(req: NextRequest) {
         const from = msg.from;
         const type = msg.type;
 
-        // Contact find or create
         let { data: contact } = await supabase.from("contacts").select("*").eq("phone", from).single();
         if (!contact) {
           const { data: newContact } = await supabase.from("contacts").insert({ phone: from, name: contacts[0]?.profile?.name || from, source: "whatsapp" }).select().single();
@@ -29,25 +33,29 @@ export async function POST(req: NextRequest) {
         }
 
         let content = "";
-        let media_url = null;
+        let media_url: string | null = null;
         let message_type = type;
 
         if (type === "text") content = msg.text?.body || "";
-        if (type === "audio" || type === "voice") {
+
+        if (type === "audio") {
           content = "🎤 Voice message";
           try {
-            // WhatsApp se media URL lo
-            const mediaId = msg.audio?.id || msg.voice?.id;
-            const mediaInfoRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, { headers: { Authorization: `Bearer ${token}` } });
-            const mediaInfo = await mediaInfoRes.json();
-            const waUrl = mediaInfo.url;
-            if (waUrl) {
-              const audioRes = await fetch(waUrl, { headers: { Authorization: `Bearer ${token}` } });
-              const buffer = await audioRes.arrayBuffer();
-              const fileName = `voice/incoming/${conv.id}/${Date.now()}.ogg`;
-              await supabase.storage.from("voice-notes").upload(fileName, buffer, { contentType: "audio/ogg", upsert: true });
-              const { data } = supabase.storage.from("voice-notes").getPublicUrl(fileName);
-              media_url = data.publicUrl;
+            const mediaId = msg.audio?.id;
+            if (mediaId && token) {
+              const mediaInfoRes = await fetch(`https://graph.facebook.com/v20.0/${mediaId}`, { headers: { Authorization: `Bearer ${token}` } });
+              const mediaInfo = await mediaInfoRes.json();
+              const waUrl = mediaInfo.url;
+              if (waUrl) {
+                const audioRes = await fetch(waUrl, { headers: { Authorization: `Bearer ${token}` } });
+                const buffer = await audioRes.arrayBuffer();
+                // Blob me convert karna zaroori hai
+                const blob = new Blob([buffer], { type: "audio/ogg" });
+                const fileName = `incoming/${conv.id}/${Date.now()}.ogg`;
+                await supabase.storage.from("voice-notes").upload(fileName, blob, { contentType: "audio/ogg", upsert: true });
+                const { data } = supabase.storage.from("voice-notes").getPublicUrl(fileName);
+                media_url = data.publicUrl;
+              }
             }
           } catch (e) { console.log("voice download err", e); }
         }
@@ -57,7 +65,8 @@ export async function POST(req: NextRequest) {
           sender_type: "contact",
           content,
           media_url,
-          message_type,
+          audio_url: media_url,
+          message_type: type === "audio"? "audio" : type,
           created_at: new Date().toISOString()
         });
 
