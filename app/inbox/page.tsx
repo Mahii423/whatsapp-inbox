@@ -55,34 +55,31 @@ export default function InboxPage() {
     await fetch("/api/send-message", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ conversationId: selected.id, message: txt }) });
   };
 
-  // VOICE RECORDING WORKING
   const startRec = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const mr = new MediaRecorder(stream);
+      const mr = new MediaRecorder(stream, { mimeType: 'audio/webm' });
       mediaRecorderRef.current = mr;
       chunksRef.current = [];
       mr.ondataavailable = e => { if(e.data.size>0) chunksRef.current.push(e.data); };
       mr.onstop = async () => {
         const blob = new Blob(chunksRef.current, { type: 'audio/webm' });
         const file = new File([blob], `voice-${Date.now()}.webm`, { type: 'audio/webm' });
-        // preview
         const url = URL.createObjectURL(blob);
-        setMessages(p => [...p, { id: Date.now(), content: "🎤 Voice message", audio_url: url, sender_type: "agent", created_at: new Date().toISOString() }]);
-        // upload to supabase storage if bucket exists, else send via api
+        setMessages(p => [...p, { id: Date.now(), content: "🎤 Voice message", audio_url: url, media_url: url, message_type: "audio", sender_type: "agent", created_at: new Date().toISOString() }]);
         try {
           const form = new FormData();
           form.append('file', file);
           form.append('conversationId', selected.id);
           await fetch("/api/send-voice", { method: "POST", body: form });
-        } catch(e){ console.log("voice api not yet, preview only", e); }
+        } catch(e){ console.log("voice api error", e); }
         stream.getTracks().forEach(t=>t.stop());
       };
       mr.start();
       setIsRecording(true);
       setRecTime(0);
       timerRef.current = setInterval(()=>setRecTime(s=>s+1),1000);
-    } catch(err){ alert("Mic permission do browser se - Allow karo"); }
+    } catch(err){ alert("Mic permission Allow karo browser se"); }
   };
 
   const stopRec = () => {
@@ -102,7 +99,7 @@ export default function InboxPage() {
     <div className="flex h-[calc(100vh-48px)] w-full overflow-hidden bg-white -m-6 relative">
       <div className="w- min-w- border-r bg-white flex flex-col">
         <div className="h- bg-[#f0f2f5] px-3 flex items-center justify-between">
-          <span className="font-bold">Chats</span>
+          <span className="font-bold text-">Chats</span>
           <div className="flex gap-1">
             <button onClick={()=>setFilter("all")} className={`px-3 py-1.5 rounded-full text- font-medium ${filter==="all"? "bg-[#e7fce3] text-[#008069]":"bg-[#f0f2f5] text-[#54656f]"}`}>All</button>
             <button onClick={()=>setFilter("unread")} className={`px-3 py-1.5 rounded-full text- font-medium flex items-center gap-1 ${filter==="unread"? "bg-[#e7fce3] text-[#008069]":"bg-[#f0f2f5] text-[#54656f]"}`}>Unread {unreadCount>0 && <span className="bg-[#25d366] text-white px-1.5 rounded-full text-">{unreadCount}</span>}</button>
@@ -134,7 +131,14 @@ export default function InboxPage() {
                 {messages.map((m:any)=>(
                   <div key={m.id} className={`flex ${m.sender_type==="agent"? "justify-end":"justify-start"}`}>
                     <div className={`rounded-[7.5px] shadow-sm px-2.5 py-1.5 max-w-[65%] text-[14.2px] ${m.sender_type==="agent"? "bg-[#d9fdd3] rounded-tr-none":"bg-white rounded-tl-none"}`}>
-                      {m.audio_url? <audio controls src={m.audio_url} className="w-" /> : <span className="whitespace-pre-wrap break-words">{m.content}</span>}
+                      {/* FIXED LINE - VOICE PLAY FOR BOTH SIDE */}
+                      {m.message_type==="audio" || m.media_url || m.audio_url? (
+                        <div className="flex flex-col gap-1 min-w-">
+                          <audio controls src={m.media_url || m.audio_url} className="w- h-" preload="metadata" />
+                        </div>
+                      ) : (
+                        <span className="whitespace-pre-wrap break-words">{m.content}</span>
+                      )}
                       <span className="inline-block float-right ml- mt- text- text-[#667781]">{new Date(m.created_at).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</span>
                       <div className="clear-both"></div>
                     </div>
