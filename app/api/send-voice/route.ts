@@ -1,59 +1,37 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "../../../utils/supabase/client";
+import { supabase } from "../../../lib/supabase";
 
 export async function POST(req: NextRequest) {
-  const supabase = createClient() as any;
-  const form = await req.formData();
-  const file = form.get("file") as File;
-  const conversationId = form.get("conversationId") as string;
-  const token = process.env.WHATSAPP_TOKEN;
-  const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
+  try {
+    const form = await req.formData();
+    const file = form.get("file") as File;
+    const conversationId = form.get("conversationId") as string;
 
-  const { data: conv } = await supabase.from("conversations").select("*, contacts(*)").eq("id", conversationId).single();
-  const phone = conv?.contacts?.phone;
+    if (!file || !conversationId) {
+      return NextResponse.json({ error: "missing file" }, { status: 400 });
+    }
 
-  // File ko buffer banao
-  const buffer = await file.arrayBuffer();
-  const fileName = `voice/outgoing/${conversationId}/${Date.now()}.ogg`;
-  await supabase.storage.from("voice-notes").upload(fileName, buffer, { contentType: "audio/webm", upsert: true });
-  const { data: urlData } = supabase.storage.from("voice-notes").getPublicUrl(fileName);
+    const fileName = `voice-${Date.now()}.webm`;
+    const { error } = await supabase.storage
+      .from("voice-notes")
+      .upload(fileName, file, { contentType: "audio/webm" });
 
-  // WhatsApp ko bhejo - webm ko ogg ke tor pe bhejte hain, WhatsApp accept kar leta hai
-  const waForm = new FormData();
-  waForm.append("file", new Blob([buffer], { type: "audio/ogg" }), "voice.ogg");
-  waForm.append("type", "audio/ogg");
-  waForm.append("messaging_product", "whatsapp");
+    if (error) throw error;
 
-  const upRes = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/media`, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: waForm,
-  });
-  const upData = await upRes.json();
-  console.log("upload", upData);
+    const { data } = supabase.storage.from("voice-notes").getPublicUrl(fileName);
+    const url = data.publicUrl;
 
-  if (upData.id) {
-    const sendRes = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-      body: JSON.stringify({
-        messaging_product: "whatsapp",
-        to: phone,
-        type: "audio",
-        audio: { id: upData.id }
-      })
+    await supabase.from("messages").insert({
+      conversation_id: conversationId,
+      content: "🎤 Voice",
+      media_url: url,
+      audio_url: url,
+      message_type: "audio",
+      sender_type: "agent",
     });
-    const sendData = await sendRes.json();
-    console.log("send voice", sendData);
+
+    return NextResponse.json({ url });
+  } catch (e: any) {
+    return NextResponse.json({ error: e.message }, { status: 500 });
   }
-
-  await supabase.from("messages").insert({
-    conversation_id: conversationId,
-    sender_type: "agent",
-    content: "🎤 Voice message",
-    media_url: urlData.publicUrl,
-    message_type: "audio"
-  });
-
-  return NextResponse.json({ ok: true, url: urlData.publicUrl });
 }
