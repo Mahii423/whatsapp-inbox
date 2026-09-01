@@ -2,10 +2,9 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 
-type Conv = { id: string; contact_id: string; contacts: { id:string; name:string; phone:string; avatar_url?: string } | null; last_message_at: string; last_msg?: string }
-type Msg = { id:string; conversation_id:string; content:string; sender_type:string; created_at:string; type?: 'text'|'voice'; audioUrl?: string; duration?: number }
-
-const QUICK = ["Hello! 👋 How can I help?", "Order confirmed ✅", "Payment link: https://mahiwa.shop/pay", "We are open 9am-9pm", "Thanks for contacting MahiWA 🙏"];
+type Contact = { id:string; name:string; phone:string; avatar_url?: string };
+type Conv = { id:string; contact_id:string; contacts:Contact|null; last_message_at:string; last_msg?:string; unread?:number }
+type Msg = { id:string; conversation_id:string; content:string; sender_type:string; created_at:string; status?:string }
 
 export default function InboxPage(){
   const [convs,setConvs]=useState<Conv[]>([]);
@@ -13,130 +12,185 @@ export default function InboxPage(){
   const [messages,setMessages]=useState<Msg[]>([]);
   const [newMsg,setNewMsg]=useState("");
   const [search,setSearch]=useState("");
-  const [showQuick,setShowQuick]=useState(false);
-  const [isRecording,setIsRecording]=useState(false);
-  const [recTime,setRecTime]=useState(0);
-  const mediaRecorderRef=useRef<MediaRecorder|null>(null);
-  const chunksRef=useRef<Blob[]>([]);
-  const timerRef=useRef<any>(null);
-  const [playingId,setPlayingId]=useState<string|null>(null);
-  const audioRef=useRef<HTMLAudioElement|null>(null);
+  const [filter,setFilter]=useState<'all'|'unread'|'favorites'|'groups'>('all');
   const endRef=useRef<HTMLDivElement>(null);
+  const scrollRef=useRef<HTMLDivElement>(null);
 
   useEffect(()=>{ endRef.current?.scrollIntoView({behavior:'smooth'}); },[messages]);
 
+  // Load conversations with live last message
   useEffect(()=>{
     (async()=>{
       const {data: convsRaw} = await supabase.from("conversations").select("id,contact_id,last_message_at").order("last_message_at",{ascending:false}).limit(100);
       if(!convsRaw?.length) return;
       const contactIds = convsRaw.map(c=>c.contact_id);
       const {data: contactsRaw} = await supabase.from("contacts").select("id,name,phone,avatar_url").in("id",contactIds);
-      const {data: lastMsgs} = await supabase.from("messages").select("conversation_id,content").in("conversation_id", convsRaw.map(c=>c.id)).order("created_at",{ascending:false});
-      const merged = convsRaw.map(c=>({...c, contacts: contactsRaw?.find(x=>x.id===c.contact_id)||null, last_msg: lastMsgs?.find(m=>m.conversation_id===c.id)?.content||"" }));
-      setConvs(merged as any);
-      if(merged.length>0) setSelected(merged[0] as any);
+      const {data: lastMsgs} = await supabase.from("messages").select("conversation_id,content,created_at,sender_type").in("conversation_id", convsRaw.map(c=>c.id)).order("created_at",{ascending:false});
+
+      const merged:Conv[] = convsRaw.map((c:any)=>{
+        const contact = contactsRaw?.find(x=>x.id===c.contact_id)||{id:c.contact_id, name:c.contact_id, phone:c.contact_id};
+        const last = lastMsgs?.filter((m:any)=>m.conversation_id===c.id)[0];
+        // for demo unread
+        const unread = Math.random()>0.6? Math.floor(Math.random()*3)+1 : 0;
+        return { id:c.id, contact_id:c.contact_id, contacts:contact as any, last_message_at: last?.created_at || c.last_message_at, last_msg: last?.content || contact.phone, unread: unread };
+      });
+      setConvs(merged);
+      if(merged.length>0) setSelected(merged[0]);
     })();
   },[]);
 
+  // Load messages
   useEffect(()=>{
     if(!selected?.id) return;
     (async()=>{
       const {data} = await supabase.from("messages").select("*").eq("conversation_id",selected.id).order("created_at",{ascending:true});
-      if(data) setMessages(data.map(d=>({...d,type:'text'})) as any);
+      if(data) setMessages(data as any);
     })();
   },[selected]);
 
-  async function send(t?:string){
-    const text=t||newMsg; if(!text.trim()||!selected) return;
-    setNewMsg(""); setShowQuick(false);
-    setMessages(p=>[...p,{id:Date.now().toString(), conversation_id:selected.id, content:text, sender_type:'agent', created_at:new Date().toISOString(), type:'text'} as any]);
-    fetch("/api/send-message",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conversation_id:selected.id,message:text})});
+  // Realtime - last message update jaisa original WhatsApp
+  useEffect(()=>{
+    const channel = supabase.channel('inbox-live')
+     .on('postgres_changes',{event:'INSERT',schema:'public',table:'messages'},(payload:any)=>{
+        const m = payload.new as Msg;
+        // update conv list
+        setConvs(prev=> prev.map(c=>{
+          if(c.id===m.conversation_id){
+            return {...c, last_msg:m.content, last_message_at:m.created_at, unread: c.id!==selected?.id? (c.unread||0)+1 : 0 };
+          }
+          return c;
+        }).sort((a,b)=> new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()));
+        // update current chat
+        if(selected?.id===m.conversation_id){
+          setMessages(prev=>[...prev,m]);
+        }
+      }).subscribe();
+    return ()=>{ supabase.removeChannel(channel); }
+  },[selected]);
+
+  async function send(){
+    if(!newMsg.trim()||!selected) return;
+    const text=newMsg; setNewMsg("");
+    const temp:Msg = {id:Date.now().toString(), conversation_id:selected.id, content:text, sender_type:'agent', created_at:new Date().toISOString(), status:'sent'};
+    setMessages(p=>[...p,temp]);
+    setConvs(prev=> prev.map(c=> c.id===selected.id? {...c, last_msg:text, last_message_at:new Date().toISOString()} : c).sort((a,b)=> new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()));
+    await fetch("/api/send-message",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({conversation_id:selected.id,message:text})});
   }
 
-  async function startRec(){
-    try{
-      const stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      const mr=new MediaRecorder(stream); mediaRecorderRef.current=mr; chunksRef.current=[];
-      mr.ondataavailable=e=>{if(e.data.size>0) chunksRef.current.push(e.data)};
-      mr.onstop=()=>{const blob=new Blob(chunksRef.current,{type:'audio/webm'}); const url=URL.createObjectURL(blob); setMessages(p=>[...p,{id:Date.now().toString(),conversation_id:selected!.id,content:'Voice',sender_type:'agent',created_at:new Date().toISOString(),type:'voice',audioUrl:url,duration:recTime} as any]); stream.getTracks().forEach(t=>t.stop())};
-      mr.start(); setIsRecording(true); setRecTime(0); timerRef.current=setInterval(()=>setRecTime(s=>s+1),1000);
-    }catch{ alert("Mic allow karo"); }
-  }
-  const stopRec=()=>{ mediaRecorderRef.current?.stop(); setIsRecording(false); clearInterval(timerRef.current); };
-  const togglePlay=(m:Msg)=>{ if(playingId===m.id){audioRef.current?.pause(); setPlayingId(null); return;} audioRef.current?.pause(); const a=new Audio(m.audioUrl); audioRef.current=a; a.onended=()=>setPlayingId(null); a.play(); setPlayingId(m.id); };
+  const filtered = useMemo(()=>{
+    let list = [...convs];
+    if(search) list = list.filter(c=> c.contacts?.name.toLowerCase().includes(search.toLowerCase()) || c.contacts?.phone.includes(search));
+    if(filter==='unread') list = list.filter(c=> (c.unread||0)>0);
+    return list;
+  },[convs,search,filter]);
 
-  const filtered=useMemo(()=>convs.filter(c=>!search||c.contacts?.name?.toLowerCase().includes(search.toLowerCase())||c.contacts?.phone?.includes(search)),[convs,search]);
+  const unreadCount = convs.reduce((a,c)=>a+(c.unread||0),0);
 
   return(
-    <div className="flex w-full bg-white rounded-2xl border overflow-hidden shadow-sm" style={{height:'calc(100vh - 80px)'}}>
+    <div className="flex w-full bg-white rounded-2xl border overflow-hidden shadow-sm" style={{height:'calc(100vh - 75px)'}}>
       <style>{`
        .wa-scroll{ overflow-y:auto; overflow-x:hidden; }
-       .wa-scroll::-webkit-scrollbar{ width:5px; }
-       .wa-scroll::-webkit-scrollbar-thumb{ background:#d1d7db; border-radius:10px; }
+       .wa-scroll::-webkit-scrollbar{ width:6px; }
+       .wa-scroll::-webkit-scrollbar-thumb{ background:#c1c1c1; border-radius:10px; }
        .wa-scroll::-webkit-scrollbar-track{ background:transparent; }
-       .bubble-text{ font-size:14.2px; line-height:19px; color:#111b21; }
-       .bubble-time{ font-size:11px; line-height:12px; color:#667781; }
+       .wa-scroll{ scrollbar-width:thin; scrollbar-color:#c1c1c1 transparent; }
       `}</style>
 
-      {/* LEFT */}
-      <div className="w- border-r flex flex-col bg-white shrink-0">
-        <div className="p-3 border-b space-y-3"><h2 className="font-bold text-">Chats</h2><div className="relative"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search or start new chat" className="w-full bg-[#f0f2f5] rounded-lg pl-9 pr-3 py-2.5 text- outline-none"/><span className="absolute left-3 top-2.5 text-gray-500">⌕</span></div></div>
-        <div className="flex-1 wa-scroll">
-          {filtered.map(c=>(
-            <div key={c.id} onClick={()=>setSelected(c)} className={`p-3 border-b border-[#f0f2f5] flex gap-3 cursor-pointer hover:bg-[#f5f6f6] ${selected?.id===c.id?'bg-[#f0f2f5]':''}`}>
-              <img src={c.contacts?.avatar_url||`https://ui-avatars.com/api/?name=${encodeURIComponent(c.contacts?.name||'U')}&background=25D366&color=fff`} className="w-12 h-12 rounded-full shrink-0" alt=""/>
-              <div className="flex-1 min-w-0"><div className="flex justify-between"><span className="font-semibold text- truncate">{c.contacts?.name||c.contacts?.phone}</span><span className="text- text-[#667781] ml-2 shrink-0">{new Date(c.last_message_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span></div><div className="text- text-[#667781] truncate">{c.last_msg||c.contacts?.phone}</div></div>
-            </div>
-          ))}
+      {/* LEFT - EXACT WA WEB */}
+      <div className="w- flex flex-col bg-white border-r shrink-0">
+        {/* Header */}
+        <div className="h- px-4 flex items-center justify-between bg-[#f0f2f5]">
+          <h1 className="font-bold text-">WhatsApp</h1>
+          <div className="flex gap-2 text-[#54656f] text-xl">
+            <button className="w-9 h-9 rounded-full hover:bg-gray-200 flex items-center justify-center">⧉</button>
+            <button className="w-9 h-9 rounded-full hover:bg-gray-200 flex items-center justify-center">⋮</button>
+          </div>
+        </div>
+
+        <div className="p-3 bg-white space-y-3">
+          <div className="relative">
+            <span className="absolute left-3 top- text-[#54656f] text-">⌕</span>
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search or start new chat" className="w-full bg-[#f0f2f5] rounded- pl-10 pr-3 py- text- outline-none placeholder-[#667781]"/>
+          </div>
+          <div className="flex gap-2 overflow-x-auto scrollbar-hide pb-1">
+            <button onClick={()=>setFilter('all')} className={`px-3 py- rounded-full text- font-medium whitespace-nowrap ${filter==='all'?'bg-[#e7fce3] text-[#008a6c]':'bg-[#f0f2f5] text-[#54656f]'}`}>All</button>
+            <button onClick={()=>setFilter('unread')} className={`px-3 py- rounded-full text- font-medium whitespace-nowrap ${filter==='unread'?'bg-[#e7fce3] text-[#008a6c]':'bg-[#f0f2f5] text-[#54656f]'}`}>Unread {unreadCount>0?unreadCount:''}</button>
+            <button className="px-3 py- rounded-full text- font-medium whitespace-nowrap bg-[#f0f2f5] text-[#54656f]">Favorites</button>
+            <button className="px-3 py- rounded-full text- font-medium whitespace-nowrap bg-[#f0f2f5] text-[#54656f]">Groups</button>
+            <button className="w-7 h-7 rounded-full bg-[#f0f2f5] text-[#54656f] flex items-center justify-center shrink-0">+</button>
+          </div>
+        </div>
+
+        {/* Chat List - with live last message like original */}
+        <div ref={scrollRef} className="flex-1 wa-scroll">
+          {filtered.map(c=>{
+            const isActive = selected?.id===c.id;
+            const time = new Date(c.last_message_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+            const dateLabel = new Date(c.last_message_at).toDateString()===new Date().toDateString()? time : new Date(c.last_message_at).toLocaleDateString();
+            return(
+              <div key={c.id} onClick={()=>{setSelected(c); setConvs(prev=>prev.map(x=>x.id===c.id?{...x,unread:0}:x))}} className={`h- px-3 flex items-center gap-3 cursor-pointer hover:bg-[#f5f6f6] border-t border-[#f0f2f5] ${isActive?'bg-[#f0f2f5]':''}`}>
+                <img src={c.contacts?.avatar_url||`https://ui-avatars.com/api/?name=${encodeURIComponent(c.contacts?.name||'U')}&background=${isActive?'#dfe5e7':'#dfe5e7'}&color=#54656f`} className="w- h- rounded-full shrink-0" alt=""/>
+                <div className="flex-1 min-w-0 py-1">
+                  <div className="flex justify-between items-center">
+                    <span className="font-[400] text- leading-5 truncate text-[#111b21]">{c.contacts?.name||c.contacts?.phone}</span>
+                    <span className="text- text-[#667781] shrink-0 ml-2">{dateLabel}</span>
+                  </div>
+                  <div className="flex justify-between items-center mt-1">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <span className="text-[#53bdeb] text-">✓✓</span>
+                      <span className="text- text-[#667781] truncate">{c.last_msg}</span>
+                    </div>
+                    {c.unread? <span className="bg-[#25d366] text-white text- min-w- h-5 rounded-full flex items-center justify-center px-1.5 font-bold ml-2">{c.unread}</span> : null}
+                  </div>
+                </div>
+              </div>
+            )
+          })}
         </div>
       </div>
 
-      {/* RIGHT */}
-      <div className="flex-1 flex flex-col" style={{backgroundColor:'#efeae2', backgroundImage:`url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")`}}>
-        {!selected? <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">Select a chat</div> : (
+      {/* RIGHT - Chat */}
+      <div className="flex-1 flex flex-col" style={{backgroundColor:'#efeae2', backgroundImage:`url("https://user-images.githubusercontent.com/15075759/28719144-86dc0f70-73b1-11e7-911d-60d70fcded21.png")`, backgroundSize:'contain'}}>
+        {!selected? <div className="flex-1 flex items-center justify-center text-[#667781]">Select a chat</div> : (
           <>
-            <div className="h- bg-[#f0f2f5] border-b px-4 flex items-center gap-3 shrink-0">
-              <div className="w-10 h-10 rounded-full bg-[#dfdede] flex items-center justify-center font-bold text-sm">{selected.contacts?.name?.substring(0,2).toUpperCase()||'OB'}</div>
-              <div><div className="font-semibold text- leading-5">{selected.contacts?.name}</div><div className="text- text-[#667781] leading-4">{selected.contacts?.phone}</div></div>
+            {/* Top Bar - exact WA */}
+            <div className="h- bg-[#f0f2f5] border-l px-4 flex items-center justify-between shrink-0">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-[#dfe5e7] flex items-center justify-center font-bold text-[#54656f]">{selected.contacts?.name?.[0]?.toUpperCase()||'O'}</div>
+                <div><div className="font-semibold text- text-[#111b21]">{selected.contacts?.name||selected.contacts?.phone}</div><div className="text- text-[#667781]">{selected.contacts?.phone}</div></div>
+              </div>
+              <div className="flex items-center gap-1">
+                <button className="border bg-white rounded-full px-3 py-1 text-">◧ Add to list ⌄</button>
+                <button className="w-10 h-10 flex items-center justify-center text-[#54656f]">⌕</button>
+                <button className="w-8 h-8 flex items-center justify-center text-[#54656f]">⋮</button>
+              </div>
             </div>
 
-            <div className="flex-1 wa-scroll p-4 space-y-">
+            {/* Messages - Original WA bubble style */}
+            <div className="flex-1 wa-scroll p-5 space-y-1">
               {messages.map(m=>(
                 <div key={m.id} className={`flex ${m.sender_type==='agent'?'justify-end':'justify-start'}`}>
-                  <div className={`max-w-[65%] rounded-[7.5px] px-2 py-1 shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] ${m.sender_type==='agent'?'bg-[#d9fdd3]':'bg-white'}`}>
-                    {m.type==='voice'?(
-                      <div className="flex items-center gap-3 py-1 px-1">
-                        <button onClick={()=>togglePlay(m)} className="w-9 h-9 rounded-full bg-[#25D366] text-white flex items-center justify-center shrink-0">{playingId===m.id?'❚❚':'▶'}</button>
-                        <div className="flex items-center gap- w- h-5">{[...Array(20)].map((_,i)=><div key={i} className="w- bg-[#008a6c] rounded-full" style={{height:`${6+Math.random()*14}px`}}></div>)}</div>
-                        <span className="bubble-time">{Math.floor((m.duration||0)/60)}:{String((m.duration||0)%60).padStart(2,'0')}</span>
-                      </div>
-                    ):(
-                      <div className="flex flex-wrap items-end gap-x-2">
-                        <span className="bubble-text whitespace-pre-wrap break-words">{m.content}</span>
-                        <span className="bubble-time ml-auto flex items-center gap-1 pt- whitespace-nowrap">
-                          {new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}
-                          {m.sender_type==='agent'&&<span className="text-[#53bdeb] text-">✓✓</span>}
-                        </span>
-                      </div>
-                    )}
+                  <div className={`relative max-w-[65%] rounded-[7.5px] shadow-[0_1px_0.5px_rgba(0,0,0,0.13)] px-2 pt- pb- ${m.sender_type==='agent'?'bg-[#d9fdd3] rounded-tr-none':'bg-white rounded-tl-none'}`}>
+                    <span className="text-[14.2px] leading- text-[#111b21] whitespace-pre-wrap break-words">{m.content}</span>
+                    <span className="inline-block float-right ml-3 mt- -mb-1 select-none">
+                      <span className="text- leading- text-[#667781]">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>
+                      {m.sender_type==='agent'&&<span className="text- text-[#53bdeb] ml-1">✓✓</span>}
+                    </span>
+                    <div className="clear-both"></div>
                   </div>
                 </div>
               ))}
               <div ref={endRef}/>
             </div>
 
-            {showQuick&&<div className="bg-white border-t p-2 space-y-1 max-h-32 wa-scroll">{QUICK.map((q,i)=><button key={i} onClick={()=>send(q)} className="w-full text-left text- bg-[#f0f2f5] hover:bg-[#e7fce3] px-3 py-2 rounded-lg">⚡ {q}</button>)}</div>}
-
-            <div className="bg-[#f0f2f5] p- flex gap-2 items-center">
-              <button onClick={()=>setShowQuick(!showQuick)} className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 ${showQuick?'bg-[#008a6c] text-white':'bg-white text-[#54656f]'}`}>⚡</button>
-              {isRecording?(
-                <div className="flex-1 bg-white rounded-full px-4 py-2.5 flex items-center gap-3"><div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div><span className="text- flex-1">{recTime}s recording</span><button onClick={stopRec} className="w-8 h-8 bg-[#00a884] text-white rounded-full flex items-center justify-center">➤</button></div>
-              ):(
-                <>
-                  <div className="flex-1 bg-white rounded-full px-4 flex items-center"><input value={newMsg} onChange={e=>setNewMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="Type a message" className="w-full py- text-[14.2px] outline-none placeholder-[#667781]"/><button className="ml-2 text-[#54656f]">😊</button></div>
-                  {newMsg.trim()? <button onClick={()=>send()} className="w- h- bg-[#00a884] hover:bg-[#008a6c] text-white rounded-full flex items-center justify-center shrink-0">➤</button> : <button onClick={startRec} className="w- h- bg-[#00a884] text-white rounded-full flex items-center justify-center shrink-0">🎙️</button>}
-                </>
-              )}
+            {/* Input - Original WA Web */}
+            <div className="bg-[#f0f2f5] px-4 py- flex items-center gap-3 shrink-0 border-l">
+              <button className="text- text-[#54656f] w-7 h-7 flex items-center justify-center">+</button>
+              <button className="text- text-[#54656f] w-7 h-7 flex items-center justify-center">☺</button>
+              <div className="flex-1 bg-white rounded- px-4 py- flex items-center"><input value={newMsg} onChange={e=>setNewMsg(e.target.value)} onKeyDown={e=>e.key==='Enter'&&send()} placeholder="Type a message" className="flex-1 text- outline-none placeholder-[#667781]"/><button className="ml-2 text-[#54656f]">🙂</button></div>
+              <button className="text-[#54656f] text-">◷</button>
+              <button className="text-[#54656f] text-">📎</button>
+              {newMsg.trim()? <button onClick={send} className="w-10 h-10 bg-[#25d366] rounded-full flex items-center justify-center text-white text-">➤</button> : <button className="w-10 h-10 flex items-center justify-center text-[#54656f] text-">🎙️</button>}
             </div>
           </>
         )}
