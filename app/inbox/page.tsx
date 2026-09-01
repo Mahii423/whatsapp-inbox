@@ -113,9 +113,12 @@ export default function InboxPage() {
                 {messages.map((m:any)=>(
                   <div key={m.id} className={`flex ${m.sender_type==="agent"?"justify-end":"justify-start"}`}>
                     <div className={`rounded-[7.5px] shadow-sm px-2.5 py-1.5 max-w-[65%] ${m.sender_type==="agent"?"bg-[#d9fdd3] rounded-tr-none":"bg-white rounded-tl-none"}`}>
-                      {m.message_type==="audio"||m.media_url||m.audio_url?(
-                        <audio controls src={m.media_url||m.audio_url} className="w- h-" />
-                      ):(
+                      {/* FIXED VOICE LOGIC */}
+                      {(m.message_type==="audio" || m.audio_url)? (
+                        <div className="flex items-center gap-2 min-w-">
+                          <audio controls src={m.audio_url || m.media_url} className="w- h-8" preload="metadata" />
+                        </div>
+                      ) : (
                         <span className="text-[14.2px] whitespace-pre-wrap break-words">{m.content}</span>
                       )}
                       <span className="float-right ml-2 mt-1 text- text-[#667781]">{new Date(m.created_at).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'})}</span>

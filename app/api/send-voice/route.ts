@@ -1,71 +1,39 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient } from "../../../utils/supabase/server";
+import { createClient as createAdmin } from "@supabase/supabase-js";
 
 export async function POST(req: NextRequest) {
-  try {
-    const supabase = createClient(
-      process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-    );
+  const supabase = await createClient();
+  const { data: userData } = await supabase.auth.getUser();
+  if (!userData.user) return NextResponse.json({error:"Unauthorized"},{status:401});
 
-    const form = await req.formData();
-    const file = form.get("file") as File;
-    const conversationId = form.get("conversationId") as string;
+  const form = await req.formData();
+  const file = form.get("file") as File;
+  const conversationId = form.get("conversationId") as string;
+  if(!file||!conversationId) return NextResponse.json({error:"missing"},{status:400});
 
-    if (!file ||!conversationId) {
-      return NextResponse.json({ error: "missing file or conversationId" }, { status: 400 });
-    }
+  const admin = createAdmin(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!);
 
-    const fileName = `outgoing/${conversationId}/${Date.now()}.webm`;
-    const blob = new Blob([await file.arrayBuffer()], { type: "audio/webm" });
+  const { data: conv } = await admin.from("conversations").select("*, contacts(phone)").eq("id", conversationId).single();
+  const { data: account } = await admin.from("whatsapp_accounts").select("*").eq("id", conv.whatsapp_account_id).single();
 
-    const { error: upErr } = await supabase.storage.from("voice-notes").upload(fileName, blob, {
-      contentType: "audio/webm",
-      upsert: true
+  const fileName = `outgoing/${conversationId}/${Date.now()}.webm`;
+  await admin.storage.from("voice-notes").upload(fileName, new Blob([await file.arrayBuffer()],{type:"audio/webm"}), {contentType:"audio/webm", upsert:true});
+  const publicUrl = admin.storage.from("voice-notes").getPublicUrl(fileName).data.publicUrl;
+
+  const token = account?.access_token || process.env.WHATSAPP_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN;
+  const phoneId = account?.phone_number_id || process.env.WHATSAPP_PHONE_NUMBER_ID;
+
+  if(token && phoneId && conv.contacts?.phone){
+    await fetch(`https://graph.facebook.com/v23.0/${phoneId}/messages`,{
+      method:"POST",
+      headers:{Authorization:`Bearer ${token}`,"Content-Type":"application/json"},
+      body:JSON.stringify({messaging_product:"whatsapp",to:conv.contacts.phone.replace(/\D/g,""),type:"audio",audio:{link:publicUrl}})
     });
-    if (upErr) throw upErr;
-
-    const { data } = supabase.storage.from("voice-notes").getPublicUrl(fileName);
-    const publicUrl = data.publicUrl;
-
-    const { data: conv } = await supabase.from("conversations").select("contact_id").eq("id", conversationId).single();
-    const { data: contact } = await supabase.from("contacts").select("phone").eq("id", conv?.contact_id).single();
-
-    const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN;
-    const phoneId = process.env.WHATSAPP_PHONE_NUMBER_ID;
-
-    if (token && phoneId && contact?.phone) {
-      const waRes = await fetch(`https://graph.facebook.com/v20.0/${phoneId}/messages`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          messaging_product: "whatsapp",
-          to: contact.phone,
-          type: "audio",
-          audio: { link: publicUrl }
-        })
-      });
-      const waJson = await waRes.json();
-      console.log("wa send voice res", waJson);
-    }
-
-    await supabase.from("messages").insert({
-      conversation_id: conversationId,
-      sender_type: "agent",
-      content: "🎤 Voice",
-      media_url: publicUrl,
-      audio_url: publicUrl,
-      message_type: "audio",
-    });
-
-    await supabase.from("conversations").update({
-      last_message_text: "🎤 Voice",
-      last_message_at: new Date().toISOString()
-    }).eq("id", conversationId);
-
-    return NextResponse.json({ url: publicUrl });
-  } catch (e: any) {
-    console.log("send-voice error", e);
-    return NextResponse.json({ error: e.message }, { status: 500 });
   }
+
+  await admin.from("messages").insert({conversation_id:conversationId,sender_type:"agent",sender_id:userData.user.id,content:"🎤 Voice",media_url:publicUrl,audio_url:publicUrl,message_type:"audio",status:"sent"});
+  await admin.from("conversations").update({last_message_text:"🎤 Voice",last_message_at:new Date().toISOString()}).eq("id",conversationId);
+
+  return NextResponse.json({url:publicUrl});
 }
