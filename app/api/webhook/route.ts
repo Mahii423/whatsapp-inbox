@@ -9,7 +9,7 @@ export async function POST(req: NextRequest) {
     process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
   );
 
-  const token = process.env.WHATSAPP_TOKEN;
+  const token = process.env.WHATSAPP_ACCESS_TOKEN || process.env.WHATSAPP_TOKEN;
 
   for (const entry of body.entry || []) {
     for (const change of entry.changes || []) {
@@ -34,7 +34,6 @@ export async function POST(req: NextRequest) {
 
         let content = "";
         let media_url: string | null = null;
-        let message_type = type;
 
         if (type === "text") content = msg.text?.body || "";
 
@@ -49,7 +48,6 @@ export async function POST(req: NextRequest) {
               if (waUrl) {
                 const audioRes = await fetch(waUrl, { headers: { Authorization: `Bearer ${token}` } });
                 const buffer = await audioRes.arrayBuffer();
-                // Blob me convert karna zaroori hai
                 const blob = new Blob([buffer], { type: "audio/ogg" });
                 const fileName = `incoming/${conv.id}/${Date.now()}.ogg`;
                 await supabase.storage.from("voice-notes").upload(fileName, blob, { contentType: "audio/ogg", upsert: true });
